@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/shadow/contracts/capture-event.v1.schema.json",
+  "title": "Shadow Capture Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "eventId", "sessionId", "original", "createdAt"],
+  "properties": {
+    "protocol": { "const": "shadow.capture.v1" },
+    "eventId": { "type": "string", "minLength": 8, "maxLength": 128 },
+    "sessionId": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "original": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "route": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "intent", "risk"],
+      "properties": {
+        "domain": { "type": "string" },
+        "intent": { "type": "string" },
+        "risk": { "enum": ["low", "medium", "high"] }
+      }
+    }
+  }
+}
+

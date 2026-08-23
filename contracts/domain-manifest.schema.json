@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/shadow/contracts/domain-manifest.v1.schema.json",
+  "title": "Shadow Domain Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "id", "label", "capabilities"],
+  "properties": {
+    "protocol": { "const": "shadow.domain.v1" },
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9-]{1,31}$" },
+    "label": { "type": "string", "minLength": 1, "maxLength": 48 },
+    "summary": { "type": "string", "maxLength": 160 },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["read", "draft", "commit"],
+      "properties": {
+        "read": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "draft": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "commit": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "surfaces": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/surface" }
+    }
+  },
+  "$defs": {
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "title"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9.-]+$" },
+        "kind": { "enum": ["metric", "timeline", "queue", "detail"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "refreshSeconds": { "type": "integer", "minimum": 15, "maximum": 86400 }
+      }
+    }
+  }
+}
+
