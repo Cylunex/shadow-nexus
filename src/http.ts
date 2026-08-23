@@ -1,7 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import type { CaptureDraft, CaptureRequest, ReviewRequest } from "./contracts.js";
+import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createBootstrap, createDraft, reviewDraft } from "./projection.js";
 
 const MAX_BODY_BYTES = 16_384;
@@ -66,23 +69,57 @@ function sessionIdFrom(url: URL): string {
 
 export interface NexusState {
   readonly drafts: Map<string, CaptureDraft>;
+  readonly ready: Promise<void>;
+  persist(): Promise<void>;
 }
 
-export function createNexusState(): NexusState {
-  return { drafts: new Map() };
+export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?.trim()): NexusState {
+  const drafts = new Map<string, CaptureDraft>();
+  const ready = filePath === undefined || filePath === "" ? Promise.resolve() : (async () => {
+    try {
+      const value = JSON.parse(await readFile(filePath, "utf8")) as unknown;
+      if (!Array.isArray(value)) return;
+      for (const item of value) {
+        if (typeof item === "object" && item !== null && typeof (item as CaptureDraft).id === "string") {
+          const draft = item as CaptureDraft;
+          drafts.set(draft.id, draft);
+        }
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  })();
+  let writes = Promise.resolve();
+  return {
+    drafts,
+    ready,
+    persist: () => {
+      if (filePath === undefined || filePath === "") return Promise.resolve();
+      writes = writes.then(async () => {
+        await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+        const temporary = `${filePath}.tmp`;
+        await writeFile(temporary, `${JSON.stringify([...drafts.values()], null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        await rename(temporary, filePath);
+      });
+      return writes;
+    }
+  };
 }
 
 export async function handleNexusRequest(
   request: IncomingMessage,
   response: ServerResponse,
-  state: NexusState
+  state: NexusState,
+  domains: DomainGateway
 ): Promise<void> {
   try {
+    await state.ready;
     assertTrustedRequest(request);
     const url = new URL(request.url ?? "/", "http://dsh.local");
     if (request.method === "GET" && url.pathname === "/shadow-nexus/bootstrap") {
       const sessionId = sessionIdFrom(url);
-      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()]));
+      const projection = await domains.project();
+      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], new Date(), projection));
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/capture") {
@@ -91,6 +128,7 @@ export async function handleNexusRequest(
       if (typeof input.text !== "string") throw new RequestError(400, "缺少 text。");
       const draft = createDraft(input.sessionId.trim(), input.text);
       state.drafts.set(draft.id, draft);
+      await state.persist();
       send(response, 201, draft);
       return;
     }
@@ -100,23 +138,25 @@ export async function handleNexusRequest(
       if (input.decision !== "approve" && input.decision !== "reject") throw new RequestError(400, "decision 无效。");
       const current = state.drafts.get(input.draftId);
       if (current === undefined || current.sessionId !== input.sessionId) throw new RequestError(404, "没有找到这个草稿。");
-      const updated = reviewDraft(current, input.decision);
+      const receipt = input.decision === "approve" ? await domains.createDraft(current) : undefined;
+      const updated = reviewDraft(current, input.decision, new Date(), receipt);
       state.drafts.set(updated.id, updated);
+      await state.persist();
       send(response, 200, updated);
       return;
     }
     send(response, 404, { error: "Shadow Nexus route not found." });
   } catch (error) {
-    const status = error instanceof RequestError ? error.status : 500;
+    const status = error instanceof RequestError || error instanceof DomainGatewayError ? error.status : 500;
     const message = error instanceof Error ? error.message : "Shadow Nexus request failed.";
     send(response, status, { error: message });
   }
 }
 
-export function registerNexusHttp(context: Context, state: NexusState): void {
+export function registerNexusHttp(context: Context, state: NexusState, domains: DomainGateway): void {
   context.effect(() => context.webServer.register({
     kind: "prefix",
     path: "/shadow-nexus",
-    handler: (request, response) => handleNexusRequest(request, response, state)
+    handler: (request, response) => handleNexusRequest(request, response, state, domains)
   }), "shadow-nexus: workbench projection API");
 }

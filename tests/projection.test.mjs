@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertTrustedRequest, createBootstrap, createDraft, reviewDraft } from "../lib/index.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { assertTrustedRequest, createBootstrap, createDraft, createNexusState, reviewDraft } from "../lib/index.js";
 
 test("routes health capture and extracts weight", () => {
   const draft = createDraft("session-a", "今天体重 68.4kg，睡眠不错", new Date("2026-08-23T08:00:00Z"));
@@ -58,4 +61,19 @@ test("accepts same-origin JSON and rejects cross-site requests", () => {
     method: "POST",
     headers: { host: "localhost:18181", origin: "https://attacker.example", "content-type": "application/json" }
   }), /跨来源/u);
+});
+
+test("persists and reloads the review queue atomically", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shadow-nexus-state-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "drafts.json");
+  const state = createNexusState(file);
+  await state.ready;
+  const draft = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
+  state.drafts.set(draft.id, draft);
+  await state.persist();
+  assert.match(await readFile(file, "utf8"), new RegExp(draft.id, "u"));
+  const restored = createNexusState(file);
+  await restored.ready;
+  assert.equal(restored.drafts.get(draft.id)?.summary, draft.summary);
 });

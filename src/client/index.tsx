@@ -157,6 +157,7 @@ function CaptureView({ sessionId, onCreated, recordInSession }: {
 
 function DraftCard({ draft, sessionId, onReviewed }: { readonly draft: CaptureDraft; readonly sessionId: string; readonly onReviewed: () => void }) {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
   async function decide(decision: "approve" | "reject") {
     setBusy(true);
     try {
@@ -165,13 +166,17 @@ function DraftCard({ draft, sessionId, onReviewed }: { readonly draft: CaptureDr
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId, draftId: draft.id, decision })
       }));
+      setError(undefined);
       onReviewed();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "处理草稿失败。");
     } finally { setBusy(false); }
   }
   return <article className="sn-draft">
     <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "低风险" : draft.risk === "medium" ? "需确认" : "高风险"}</em></header>
     <h3>{draft.summary}</h3>
     <dl>{Object.entries(draft.fields).filter(([key]) => key !== "original").map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
+    {error !== undefined && <p className="sn-error">{error}</p>}
     <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy} onClick={() => { void decide("approve"); }}>确认草稿</button></footer>
   </article>;
 }
@@ -180,9 +185,9 @@ function ReviewView({ data, sessionId, reload }: { readonly data: NexusBootstrap
   const pending = data.drafts.filter((draft) => draft.state === "pending");
   const settled = data.drafts.filter((draft) => draft.state !== "pending");
   return <div className="sn-page">
-    <header className="sn-page-header"><span>REVIEW</span><h1>待确认，不等于已写入。</h1><p>这里展示 Shadow 的理解结果。首版确认动作仅产生预览回执，领域适配器接入后才会执行真实写入。</p></header>
+    <header className="sn-page-header"><span>REVIEW</span><h1>待确认，不等于已写入。</h1><p>这里展示 Shadow 的理解结果。确认后只在 Health 或 Ledger 创建可撤销草稿，仍由领域应用保留最终确认权。</p></header>
     {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从“记一下”开始，或者继续在右侧会话中告诉 Shadow。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sessionId={sessionId} onReviewed={reload} />)}</div>}
-    {settled.length > 0 && <section className="sn-history"><h2>本次会话已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? "已确认预览" : "已退回"}</em></p>)}</section>}
+    {settled.length > 0 && <section className="sn-history"><h2>本次会话已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? "领域草稿已创建" : "已退回"}</em></p>)}</section>}
   </div>;
 }
 
