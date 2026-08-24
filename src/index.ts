@@ -5,6 +5,7 @@ import { createDomainGateway } from "./domains.js";
 import { createNexusState, registerNexusHttp } from "./http.js";
 
 export { NEXUS_PROTOCOL_VERSION } from "./contracts.js";
+export { nexusBasePathFromPluginUrl } from "./client-path.js";
 export { assertTrustedRequest, createNexusState } from "./http.js";
 export * from "./domains.js";
 export * from "./projection.js";

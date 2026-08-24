@@ -3,7 +3,14 @@ import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertTrustedRequest, createBootstrap, createDraft, createNexusState, reviewDraft } from "../lib/index.js";
+import { assertTrustedRequest, createBootstrap, createDraft, createNexusState, nexusBasePathFromPluginUrl, reviewDraft } from "../lib/index.js";
+
+test("derives Nexus API base path from its loaded plugin script", () => {
+  assert.equal(nexusBasePathFromPluginUrl("https://nexus.example.com/plugins/@cylunex/shadow-nexus/client.js?rev=1"), "");
+  assert.equal(nexusBasePathFromPluginUrl("https://nas.example.com/harness/plugins/@cylunex/shadow-nexus/client.js?rev=1"), "/harness");
+  assert.equal(nexusBasePathFromPluginUrl("https://nas.example.com/agent/ui/plugins/@cylunex/shadow-nexus/client.js"), "/agent/ui");
+  assert.equal(nexusBasePathFromPluginUrl("not a plugin URL"), "");
+});
 
 test("routes health capture and extracts weight", () => {
   const draft = createDraft("session-a", "今天体重 68.4kg，睡眠不错", new Date("2026-08-23T08:00:00Z"));

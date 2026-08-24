@@ -1,6 +1,6 @@
 {
   "name": "@cylunex/shadow-nexus",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Shadow's native DSH workbench for capture, review, and cross-domain context.",
   "type": "module",

@@ -9,11 +9,12 @@ const inlineCss = {
   name: "inline-css",
   setup(builder) {
     builder.onResolve({ filter: /\.css\?inline$/ }, (args) => ({
-      path: resolve(args.resolveDir, args.path.slice(0, -"?inline".length)),
-      namespace: "inline-css"
+      path: args.path.slice(0, -"?inline".length),
+      namespace: "inline-css",
+      pluginData: { sourcePath: resolve(args.resolveDir, args.path.slice(0, -"?inline".length)) }
     }));
     builder.onLoad({ filter: /.*/, namespace: "inline-css" }, async (args) => ({
-      contents: await readFile(args.path, "utf8"),
+      contents: await readFile(args.pluginData.sourcePath, "utf8"),
       loader: "text"
     }));
   }
@@ -52,4 +53,3 @@ await build({
   },
   footer: { js: ";return module.exports;}});" }
 });
-

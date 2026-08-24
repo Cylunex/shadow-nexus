@@ -3,6 +3,7 @@ import type {} from "@deepseek-ai/dsh-client-ui-layout/client";
 import type { PropsRenderSlots, PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { nexusBasePathFromPluginUrl } from "../client-path.js";
 import type { CaptureDraft, DomainId, DomainSummary, NexusBootstrap, NexusView, TodaySignal } from "../contracts.js";
 import styles from "./nexus.css?inline";
 
@@ -38,8 +39,13 @@ const fallback: NexusBootstrap = {
   drafts: []
 };
 
+function nexusBasePath(): string {
+  const script = document.querySelector<HTMLScriptElement>('script[src*="/plugins/@cylunex/shadow-nexus/client.js"]');
+  return nexusBasePathFromPluginUrl(script?.src);
+}
+
 function endpoint(path: string, sessionId: string): string {
-  const url = new URL(`/shadow-nexus/${path}`, globalThis.location.origin);
+  const url = new URL(`${nexusBasePath()}/shadow-nexus/${path}`, globalThis.location.origin);
   url.searchParams.set("sessionId", sessionId);
   return url.toString();
 }
@@ -249,14 +255,26 @@ function NexusBridge(props: WorkspaceProps) {
   useLayoutEffect(() => {
     const document = marker.current?.ownerDocument;
     if (document === undefined) return;
+    let decoratedSession: HTMLElement | undefined;
     const locate = (): void => {
       const scroll = document.querySelector<HTMLElement>("[data-conversation-scroll]");
+      const session = scroll === null ? undefined : Array.from(scroll.children).find((element): element is HTMLElement =>
+        element instanceof HTMLElement && !element.hasAttribute("data-composer-seat") && !element.classList.contains("sn-app")
+      );
+      if (decoratedSession !== session) {
+        decoratedSession?.removeAttribute("data-shadow-nexus-session");
+        session?.setAttribute("data-shadow-nexus-session", "");
+        decoratedSession = session;
+      }
       setTarget((current) => current === scroll ? current : scroll ?? undefined);
     };
     locate();
     const observer = new MutationObserver(locate);
     observer.observe(document.body, { childList: true, subtree: true });
-    return () => { observer.disconnect(); };
+    return () => {
+      observer.disconnect();
+      decoratedSession?.removeAttribute("data-shadow-nexus-session");
+    };
   }, [props.sessionId]);
   return <><span ref={marker} className="sn-bridge-marker" />{target !== undefined && createPortal(<NexusWorkspace {...props} />, target)}</>;
 }

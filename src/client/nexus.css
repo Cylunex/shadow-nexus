@@ -2,31 +2,41 @@
 
 [data-conversation-scroll]:has(> .sn-app) {
   display: grid;
-  grid-template-columns: minmax(480px, 1fr) 512px;
+  grid-template-columns: minmax(480px, 1fr) clamp(380px, 32vw, 512px);
   grid-template-rows: minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   background: #070a14;
 }
 
-[data-conversation-scroll]:has(> .sn-app) > [data-slot="conversation.session"] {
+[data-conversation-scroll]:has(> .sn-app) > [data-shadow-nexus-session] {
   grid-column: 2;
   grid-row: 1;
+  display: block;
   min-width: 0;
-  min-height: 100%;
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: max(var(--dsh-composer-height, 152px), 152px);
   border-left: 1px solid rgba(120, 145, 204, .14);
   background: var(--dsw-alias-bg-base);
+  scrollbar-color: rgba(120, 145, 204, .3) transparent;
 }
 
 [data-conversation-scroll]:has(> .sn-app) > [data-composer-seat] {
   grid-column: 2;
   grid-row: 1;
+  z-index: 9;
   align-self: end;
   min-width: 0;
   width: 100%;
   position: sticky;
   bottom: 0;
+  border-left: 1px solid rgba(120, 145, 204, .14);
+  background: linear-gradient(180deg, transparent, var(--dsw-alias-bg-base) 28px);
 }
 
 .sn-app, .sn-app * { box-sizing: border-box; }
@@ -42,15 +52,13 @@
   --sn-violet: #8d7bd4;
   grid-column: 1;
   grid-row: 1;
-  position: sticky;
-  top: 0;
-  align-self: start;
+  position: relative;
   display: grid;
   grid-template-columns: 176px minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
-  min-height: 680px;
+  min-height: 0;
   overflow: hidden;
   color: var(--sn-text);
   background:
@@ -193,8 +201,9 @@
   .sn-draft-list, .sn-domain-columns { grid-template-columns: 1fr; }
 }
 
-@media (max-width: 1270px) {
+@media (max-width: 1180px) {
   [data-conversation-scroll]:has(> .sn-app) { display: block; }
   [data-conversation-scroll]:has(> .sn-app) > .sn-app { min-height: 740px; }
-  [data-conversation-scroll]:has(> .sn-app) > [data-slot="conversation.session"] { min-height: 640px; border-top: 1px solid var(--sn-line); border-left: 0; }
+  [data-conversation-scroll]:has(> .sn-app) > [data-shadow-nexus-session] { height: auto; min-height: 640px; border-top: 1px solid var(--sn-line); border-left: 0; }
+  [data-conversation-scroll]:has(> .sn-app) > [data-composer-seat] { border-left: 0; }
 }
