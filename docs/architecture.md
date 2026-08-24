@@ -21,6 +21,15 @@ Health / Ledger / Travel / Archive / Foliant
 
 The Host and Browser halves ship as one DSH plugin. `shell.overlay` provides the seat, while the official conversation remains mounted and usable. The current DSH Session is the interaction and context source. Each domain application remains the structured fact source and the only component allowed to commit its facts.
 
+## Authentication boundary
+
+Nexus does not implement a second login inside DSH. The dedicated public Nexus origin must protect the
+entire DSH surface (HTML, plugin assets, HTTP APIs, and WebSockets) with Shadow Identity at the reverse
+proxy, while the DSH upstream listens on loopback only. This is an access gate, not a domain authorization
+source: Nexus does not trust forwarded user headers, and every domain adapter continues to use its own
+server-side Agent Bearer. A trusted-LAN literal-IP bypass, when desired, is deployment policy and must not
+apply to public hostnames or forwarded traffic.
+
 ## Capture path
 
 1. A user enters natural language in Nexus or the official Conversation.
@@ -59,4 +68,3 @@ Domain plugins may raise a level but may not lower the platform minimum. An oper
 ## DSH version boundary
 
 The initial implementation targets DSH `0.1.1-rc.2` exactly. The browser bridge relies on documented slots plus the current official Conversation DOM seam. Build and native smoke tests must run before changing the DSH version.
-
