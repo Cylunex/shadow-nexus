@@ -36,7 +36,7 @@ test("parses and writes stable Nexus surface routes", () => {
   assert.equal(writeNexusNavigation(new URL("https://nexus.example/?surface=conversation&view=capture"), { surface: "nexus", route: "today" }).search, "");
 });
 
-test("layout compatibility service publishes details transitions", () => {
+test("layout compatibility service publishes sidebar, details, and assistant transitions", () => {
   const layout = new NexusLayoutState();
   let changes = 0;
   const off = layout.subscribe(() => { changes += 1; });
@@ -45,9 +45,13 @@ test("layout compatibility service publishes details transitions", () => {
   layout.openDetails();
   layout.openDetails();
   assert.equal(layout.getSnapshot().detailsOpen, true);
-  layout.closeDetails();
+  layout.openAssistant();
+  layout.openAssistant();
+  assert.equal(layout.getSnapshot().assistantOpen, true);
+  layout.closeAssistant();
   assert.equal(layout.getSnapshot().detailsOpen, false);
-  assert.equal(changes, 3);
+  assert.equal(layout.getSnapshot().assistantOpen, false);
+  assert.equal(changes, 4);
   off();
 });
 

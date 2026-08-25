@@ -33,20 +33,20 @@ test("keeps unknown information in archive capture", () => {
   assert.equal(draft.fields.original, "以后可能用得上的零散内容");
 });
 
-test("bootstrap only projects drafts from the current session", () => {
+test("bootstrap projects the global review queue across source sessions", () => {
   const now = new Date("2026-08-23T08:00:00Z");
   const a = createDraft("session-a", "收藏一篇文章", now);
   const b = createDraft("session-b", "旅行路线", now);
   const bootstrap = createBootstrap("session-a", [a, b], now);
   assert.equal(bootstrap.protocol, "shadow.nexus.v1");
-  assert.deepEqual(bootstrap.drafts.map((draft) => draft.id), [a.id]);
+  assert.deepEqual(bootstrap.drafts.map((draft) => draft.id), [a.id, b.id]);
 });
 
-test("bootstrap without a selected session keeps global projections and hides drafts", () => {
+test("bootstrap without a selected session keeps global projections and review drafts", () => {
   const now = new Date("2026-08-23T08:00:00Z");
   const draft = createDraft("session-a", "午餐花了 48 元", now);
   const bootstrap = createBootstrap(undefined, [draft], now);
-  assert.deepEqual(bootstrap.drafts, []);
+  assert.deepEqual(bootstrap.drafts.map((item) => item.id), [draft.id]);
   assert.equal(bootstrap.domains.length, 5);
 });
 

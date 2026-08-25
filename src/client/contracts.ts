@@ -6,6 +6,12 @@ import type { NexusNavigationStore } from "./navigation.js";
 
 export type NexusModuleGroup = "home" | "domains" | "agent" | "system";
 
+export interface NexusAskContext {
+  readonly module: string;
+  readonly topic?: string;
+  readonly range?: string;
+}
+
 export interface NexusPageProps {
   readonly sessionId: string | undefined;
   readonly sessions: ISessions;
@@ -15,6 +21,7 @@ export interface NexusPageProps {
   readonly reload: () => Promise<void>;
   readonly navigate: (route: string) => void;
   readonly showConversation: () => void;
+  readonly ask: (text: string, context?: NexusAskContext) => Promise<void>;
 }
 
 export interface NexusModuleContext {

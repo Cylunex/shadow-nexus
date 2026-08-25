@@ -29,6 +29,7 @@ Rules:
 - `available` is a presentation filter, not an authorization decision.
 - `badge` derives display-only state from the supplied Nexus projection.
 - Page code receives the current Session ID, Sessions service, Nexus bootstrap projection, reload and navigation actions.
+- Page code receives `ask(text, context)` to open the shared Agent dock with module/topic/range context; it must not dispatch directly into Conversation DOM.
 - Every page is isolated by a module error boundary; retry remounts only that contribution.
 - Modules do not edit Shell DOM, create root portals, or read credentials.
 

@@ -93,7 +93,7 @@ export function createDraft(sessionId: string, text: string, now = new Date()): 
 }
 
 export function createBootstrap(
-  sessionId: string | undefined,
+  _sessionId: string | undefined,
   drafts: readonly CaptureDraft[],
   now = new Date(),
   projection: BootstrapProjection = disconnectedProjection
@@ -110,7 +110,7 @@ export function createBootstrap(
     focus: "把散落的信息收回来，再决定它们最终属于哪里。",
     signals: projection.signals,
     domains: projection.domains,
-    drafts: sessionId === undefined ? [] : drafts.filter((draft) => draft.sessionId === sessionId)
+    drafts
   };
 }
 

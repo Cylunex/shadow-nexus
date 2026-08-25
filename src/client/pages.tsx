@@ -1,6 +1,7 @@
 import type { SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { useCallback, useState } from "react";
 import type { CaptureDraft, DomainId, DomainSummary, TodaySignal } from "../contracts.js";
+import { captureNexus } from "./assistant.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusModuleDescriptor, NexusPageProps } from "./contracts.js";
 
@@ -58,18 +59,7 @@ export function CapturePage({ sessionId, sessions, navigate, reload, showConvers
     if (text.trim() === "" || sessionId === undefined) return;
     setBusy(true);
     try {
-      const scope = sessions.scope(sessionId as SessionId);
-      const face = scope === undefined ? undefined : sessions.sessionOf(scope);
-      if (face === undefined) throw new Error("当前 DSH 会话尚未就绪。");
-      const original = text.trim();
-      const prompt = `[Shadow Nexus · Capture]\n请保留下面的原始信息并帮助理解；在用户于 Review 确认前，不要调用任何领域写入工具。\n\n${original}`;
-      const accepted = await face.prompt([{ type: "text", text: prompt }], "queue");
-      if (!accepted.ok) throw new Error(`${accepted.error.code}: ${accepted.error.message}`);
-      await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("capture", sessionId), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, text: original })
-      }));
+      await captureNexus(sessions, sessionId, text);
       setText("");
       setError(undefined);
       await reload();
@@ -97,16 +87,16 @@ export function CapturePage({ sessionId, sessions, navigate, reload, showConvers
   </div>;
 }
 
-function DraftCard({ draft, sessionId, reload }: { readonly draft: CaptureDraft; readonly sessionId: string; readonly reload: () => Promise<void> }) {
+function DraftCard({ draft, sourceTitle, reload }: { readonly draft: CaptureDraft; readonly sourceTitle: string; readonly reload: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   async function decide(decision: "approve" | "reject") {
     setBusy(true);
     try {
-      await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("review", sessionId), {
+      await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("review", draft.sessionId), {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, draftId: draft.id, decision })
+        body: JSON.stringify({ sessionId: draft.sessionId, draftId: draft.id, decision })
       }));
       setError(undefined);
       await reload();
@@ -115,7 +105,7 @@ function DraftCard({ draft, sessionId, reload }: { readonly draft: CaptureDraft;
     } finally { setBusy(false); }
   }
   return <article className="sn-draft">
-    <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "低风险" : draft.risk === "medium" ? "需确认" : "高风险"}</em></header>
+    <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · 来源：{sourceTitle}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "低风险" : draft.risk === "medium" ? "需确认" : "高风险"}</em></header>
     <h3>{draft.summary}</h3>
     <dl>{Object.entries(draft.fields).filter(([key]) => key !== "original").map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
     {error !== undefined && <p className="sn-error">{error}</p>}
@@ -123,24 +113,40 @@ function DraftCard({ draft, sessionId, reload }: { readonly draft: CaptureDraft;
   </article>;
 }
 
-export function ReviewPage({ data, sessionId, reload, showConversation }: NexusPageProps) {
-  if (sessionId === undefined) return <div className="sn-page"><header className="sn-page-header"><span>REVIEW</span><h1>待确认，不等于已写入。</h1></header><div className="sn-empty"><span>◇</span><h2>尚未选择会话</h2><p>待确认队列按 DSH Session 隔离。</p><button className="sn-primary" type="button" onClick={showConversation}>打开对话</button></div></div>;
+export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
   const pending = data.drafts.filter((draft) => draft.state === "pending");
   const settled = data.drafts.filter((draft) => draft.state !== "pending");
+  const summaries = sessions.list.getSnapshot().byId;
+  const sourceTitle = (draft: CaptureDraft) => summaries[draft.sessionId as SessionId]?.displayTitle ?? draft.sessionId;
   return <div className="sn-page">
-    <header className="sn-page-header"><span>REVIEW</span><h1>待确认，不等于已写入。</h1><p>确认后只在已接入领域创建可撤销草稿，最终事实仍由领域应用负责。</p></header>
-    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从“记一下”开始，或者切换到对话继续告诉 Shadow。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sessionId={sessionId} reload={reload} />)}</div>}
-    {settled.length > 0 && <section className="sn-history"><h2>本次会话已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? "领域草稿已创建" : "已退回"}</em></p>)}</section>}
+    <header className="sn-page-header"><span>REVIEW / ALL SESSIONS</span><h1>待确认，不等于已写入。</h1><p>这里汇总所有来源会话的草稿；来源 Session 只用于审计和回溯，不再隐藏待处理工作。</p></header>
+    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，草稿会进入这个全局队列。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={sourceTitle(draft)} reload={reload} />)}</div>}
+    {settled.length > 0 && <section className="sn-history"><h2>全局已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? "领域草稿已创建" : "已退回"}</em></p>)}</section>}
   </div>;
 }
 
-function DomainPage({ data, showConversation, domainId }: NexusPageProps & { readonly domainId: DomainId }) {
+function DomainPage({ data, showConversation, ask, domainId }: NexusPageProps & { readonly domainId: DomainId }) {
   const domain = data.domains.find((item) => item.id === domainId);
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string>();
   if (domain === undefined) return <div className="sn-page"><div className="sn-empty"><h2>领域尚未接入</h2></div></div>;
+  const domainLabel = domain.label;
+  async function discuss() {
+    setAsking(true);
+    try {
+      const question = domainId === "health" ? "分析一下我最近 30 天的体重变化，并说明长期趋势和短期波动。" : `结合已有数据，和我聊聊 ${domainLabel} 最近值得关注的变化。`;
+      await ask(question, { module: domainId, topic: domainId === "health" ? "weight" : "overview", range: "30d" });
+      setAskError(undefined);
+    } catch (caught) {
+      setAskError(caught instanceof Error ? caught.message : "暂时无法发起对话。");
+    } finally {
+      setAsking(false);
+    }
+  }
   return <div className="sn-page sn-domain-page">
     <header className="sn-domain-hero"><DomainMark domain={domain.id} /><div><span>SHADOW DOMAIN</span><h1>{domain.label}</h1><p>{domain.caption}</p></div><StatusDot status={domain.status} /></header>
     <section className="sn-domain-feature"><span>当前摘要</span><strong>{domain.metric}</strong><p>{domain.detail}</p></section>
-    <div className="sn-domain-columns"><section><span>事实边界</span><h2>数据留在 {domain.label}</h2><p>Nexus 只读取允许暴露的摘要、待办和跨域引用，不复制领域事实表。</p></section><section><span>会话协作</span><h2>让 Shadow 继续处理</h2><p>复杂任务切换到完整 Conversation；结果仍回到同一个 Session 和审核链。</p><button type="button" onClick={showConversation}>进入对话</button></section></div>
+    <div className="sn-domain-columns"><section><span>事实边界</span><h2>数据留在 {domain.label}</h2><p>Nexus 只读取允许暴露的摘要、待办和跨域引用，不复制领域事实表。</p></section><section><span>会话协作</span><h2>{domainId === "health" ? "聊聊最近的体重变化" : "让 Shadow 继续处理"}</h2><p>{domainId === "health" ? "保持当前页面，在右侧对话中读取趋势并继续追问。" : "在右侧对话中结合这个领域的页面上下文继续交流。"}</p><div className="sn-domain-actions"><button type="button" disabled={asking} onClick={() => { void discuss(); }}>{asking ? "正在打开…" : domainId === "health" ? "聊聊 30 天体重变化" : "聊聊这个领域"}</button><button type="button" onClick={showConversation}>展开完整对话</button></div>{askError !== undefined && <p className="sn-error">{askError}</p>}</section></div>
     {domain.status === "offline" && <aside className="sn-boundary"><b>保留入口</b><p>该领域仍在改造中，Nexus 不读取临时接口，也不建立不受支持的兼容层。</p></aside>}
   </div>;
 }

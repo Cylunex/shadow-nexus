@@ -7,8 +7,9 @@ Shadow Nexus is the Shadow-facing root Web shell over DSH Runtime. It owns prese
 ```text
 DSH UI Renderer
 └── Shadow Nexus root
-    ├── Nexus workbench (default, full screen)
-    ├── official Sidebar + Conversation (on demand, full screen)
+    ├── Nexus workbench + visible current Session
+    ├── official Conversation (right dock or full screen)
+    ├── official Sidebar (full Conversation mode)
     ├── official Details
     └── shared overlays
           │ same current Session + HTTP projection
@@ -22,13 +23,13 @@ Shadow Nexus host plugin
 Health / Ledger / Travel / Archive / Foliant
 ```
 
-The Host and Browser halves ship as one DSH plugin. In the dedicated Shadow profile, the bundle disables official `ui-layout`; Nexus becomes the only `root` occupant and declares the `sidebar`, `conversation`, `details`, and `shell.overlay` child slots. It also provides the small `layout` service consumed by official Conversation and projects the upstream theme onto the document. Sidebar and Conversation remain mounted while hidden so session navigation, streaming, draft, and scroll state survive surface switches. The current DSH Session is the interaction and context source. Each domain application remains the structured fact source and the only component allowed to commit its facts.
+The Host and Browser halves ship as one DSH plugin. In the dedicated Shadow profile, the bundle disables official `ui-layout`; Nexus becomes the only `root` occupant and declares the `sidebar`, `conversation`, `details`, and `shell.overlay` child slots. It also provides the small `layout` service consumed by official Conversation and projects the upstream theme onto the document. Conversation is mounted exactly once and changes geometry between hidden, right-dock, and full-screen states, so streaming, composer drafts, tools and scroll state survive transitions. The current DSH Session is the interaction and context source; its real title and selector remain visible in the workbench. Each domain application remains the structured fact source and the only component allowed to commit its facts.
 
 The stock `web` profile must remain available without the Nexus bundle. Root ownership is a composition boundary and is not hot-swapped inside a running renderer.
 
 ## Browser navigation and modules
 
-The query parameters `surface` and `view` are the durable browser navigation state. Nexus defaults to `surface=nexus` and `view=today`; browser back/forward and refresh preserve explicit selections. DSH remains the sole owner of current Session selection.
+The query parameters `surface` and `view` are the durable browser navigation state. Nexus defaults to `surface=nexus` and `view=today`; browser back/forward and refresh preserve explicit selections. DSH remains the sole owner of current Session selection. The workbench currently follows that selection explicitly and labels the policy instead of silently borrowing the last Session.
 
 Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Today, Capture, Review, and the initial domain pages use the same versioned registration contract as external client plugins. Registrations have namespaced IDs, unique routes, deterministic ordering, availability and badge hooks, and effect-scoped disposal. A removed active module falls back to Today.
 
@@ -53,6 +54,12 @@ apply to public hostnames or forwarded traffic.
 6. Nexus stores a receipt and projects the result back into the session and UI.
 
 The first slice in this repository implements steps 1–4 as an explicit preview. Its receipt starts with `preview:` and must never be interpreted as a domain write.
+
+## Assistant path
+
+The persistent workbench bar separates two intents. **Ask** queues an ordinary, read-only Agent request into the displayed Session and opens the same official Conversation in the right dock. **Capture** preserves the original text and creates a reviewable structured draft. Domain pages may call the same Ask action with visible page context; Health uses it for the initial 30-day weight discussion. Asking never implies permission to create or mutate domain facts.
+
+Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work.
 
 ## Confirmation levels
 
