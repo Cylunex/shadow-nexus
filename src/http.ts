@@ -60,9 +60,9 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
   }
 }
 
-function sessionIdFrom(url: URL): string {
+function sessionIdFrom(url: URL): string | undefined {
   const sessionId = url.searchParams.get("sessionId")?.trim();
-  if (sessionId === undefined || sessionId === "") throw new RequestError(400, "缺少 sessionId。");
+  if (sessionId === undefined || sessionId === "") return undefined;
   if (sessionId.length > 256) throw new RequestError(400, "sessionId 无效。");
   return sessionId;
 }

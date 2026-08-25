@@ -1,4 +1,6 @@
+- id: ui-layout
+  disabled: true
+
 - insert:
     - id: shadow-nexus
       name: '@cylunex/shadow-nexus'
-

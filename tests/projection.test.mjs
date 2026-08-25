@@ -42,6 +42,14 @@ test("bootstrap only projects drafts from the current session", () => {
   assert.deepEqual(bootstrap.drafts.map((draft) => draft.id), [a.id]);
 });
 
+test("bootstrap without a selected session keeps global projections and hides drafts", () => {
+  const now = new Date("2026-08-23T08:00:00Z");
+  const draft = createDraft("session-a", "午餐花了 48 元", now);
+  const bootstrap = createBootstrap(undefined, [draft], now);
+  assert.deepEqual(bootstrap.drafts, []);
+  assert.equal(bootstrap.domains.length, 5);
+});
+
 test("review creates a receipt and cannot be repeated", () => {
   const draft = createDraft("session-a", "买了咖啡 26 元", new Date("2026-08-23T08:00:00Z"));
   const approved = reviewDraft(draft, "approve", new Date("2026-08-23T08:01:00Z"));

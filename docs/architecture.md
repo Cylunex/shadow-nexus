@@ -1,14 +1,17 @@
 # Shadow Nexus architecture
 
-Shadow Nexus is the Shadow-facing workbench inside DSH. It unifies the interaction surface, not domain ownership.
+Shadow Nexus is the Shadow-facing root Web shell over DSH Runtime. It owns presentation and navigation, not domain facts or the Agent loop.
 
 ## Runtime shape
 
 ```text
-DSH Web
-├── official Conversation + Composer
-└── Shadow Nexus browser surface
-          │ current Session + HTTP projection
+DSH UI Renderer
+└── Shadow Nexus root
+    ├── Nexus workbench (default, full screen)
+    ├── official Sidebar + Conversation (on demand, full screen)
+    ├── official Details
+    └── shared overlays
+          │ same current Session + HTTP projection
           ▼
 Shadow Nexus host plugin
 ├── capture queue and review policy
@@ -19,7 +22,17 @@ Shadow Nexus host plugin
 Health / Ledger / Travel / Archive / Foliant
 ```
 
-The Host and Browser halves ship as one DSH plugin. `shell.overlay` provides the seat, while the official conversation remains mounted and usable. The current DSH Session is the interaction and context source. Each domain application remains the structured fact source and the only component allowed to commit its facts.
+The Host and Browser halves ship as one DSH plugin. In the dedicated Shadow profile, the bundle disables official `ui-layout`; Nexus becomes the only `root` occupant and declares the `sidebar`, `conversation`, `details`, and `shell.overlay` child slots. It also provides the small `layout` service consumed by official Conversation and projects the upstream theme onto the document. Sidebar and Conversation remain mounted while hidden so session navigation, streaming, draft, and scroll state survive surface switches. The current DSH Session is the interaction and context source. Each domain application remains the structured fact source and the only component allowed to commit its facts.
+
+The stock `web` profile must remain available without the Nexus bundle. Root ownership is a composition boundary and is not hot-swapped inside a running renderer.
+
+## Browser navigation and modules
+
+The query parameters `surface` and `view` are the durable browser navigation state. Nexus defaults to `surface=nexus` and `view=today`; browser back/forward and refresh preserve explicit selections. DSH remains the sole owner of current Session selection.
+
+Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Today, Capture, Review, and the initial domain pages use the same versioned registration contract as external client plugins. Registrations have namespaced IDs, unique routes, deterministic ordering, availability and badge hooks, and effect-scoped disposal. A removed active module falls back to Today.
+
+Installed domain UI code must enter through a trusted DSH Client plugin. A domain manifest may describe a Surface but never names remotely executed JavaScript.
 
 ## Authentication boundary
 
@@ -67,4 +80,4 @@ Domain plugins may raise a level but may not lower the platform minimum. An oper
 
 ## DSH version boundary
 
-The initial implementation targets DSH `0.1.1-rc.2` exactly. The browser bridge relies on documented slots plus the current official Conversation DOM seam. Build and native smoke tests must run before changing the DSH version.
+The implementation targets DSH `0.1.1-rc.2` exactly. It relies on documented root/Conversation slots and the public `layout` service shape; it does not inspect Conversation DOM. Build, slot-topology tests, and native Shadow-profile smoke tests must run before changing the DSH version.

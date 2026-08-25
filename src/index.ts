@@ -6,6 +6,9 @@ import { createNexusState, registerNexusHttp } from "./http.js";
 
 export { NEXUS_PROTOCOL_VERSION } from "./contracts.js";
 export { nexusBasePathFromPluginUrl } from "./client-path.js";
+export { NexusLayoutState } from "./client/layout-state.js";
+export { DefaultNexusModuleRegistry } from "./client/module-registry.js";
+export { parseNexusNavigation, writeNexusNavigation } from "./client/navigation.js";
 export { assertTrustedRequest, createNexusState } from "./http.js";
 export * from "./domains.js";
 export * from "./projection.js";
