@@ -47,13 +47,13 @@ apply to public hostnames or forwarded traffic.
 ## Capture path
 
 1. A user enters natural language in Nexus or the official Conversation.
-2. The original text is appended to the active DSH Session.
-3. Shadow classifies it into a domain intent and creates a draft with the original text intact.
-4. Policy decides whether it can proceed automatically or must enter Review.
-5. A domain adapter validates and commits through the domain's own API.
-6. Nexus stores a receipt and projects the result back into the session and UI.
+2. The original text is appended to the active DSH Session as a read-only structured-analysis request.
+3. Nexus waits for that exact DSH turn to end and validates the marked JSON result; prompt admission is never treated as completion.
+4. The DSH result, rather than local keyword rules, decides the domain fan-out and fields shown in Review.
+5. After explicit Review, a domain adapter validates and commits through the domain's own API.
+6. Nexus stores the canonical receipt and projects the result back into the UI.
 
-The first slice in this repository implements steps 1–4 as an explicit preview. Its receipt starts with `preview:` and must never be interpreted as a domain write.
+The capture-analysis prompt forbids tools and produces only the versioned Nexus result envelope. Health uses a two-call domain transaction after Review: create an auditable pending proposal, then commit that exact proposal through the hidden `health.records.write` boundary. The formal-write capability is not exposed to the DSH model.
 
 ## Assistant path
 
@@ -61,7 +61,7 @@ The persistent workbench bar separates two intents. **Ask** queues an ordinary, 
 
 Ask treats images and ordinary files identically. The Host performs the Shadow Asset three-step upload, retains the short-lived Upload Token only in memory, and exposes a read-only local view inside the DSH Session sandbox. The queued prompt contains the stable `shadow://nexus/...` reference and local read path; Shadow Asset remains authoritative, and DSH native attachment storage is not used by Nexus.
 
-Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work.
+Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work. A Health Review confirmation is final: the resulting receipt points at canonical Health data and does not require a second confirmation in the Health UI. Ledger keeps its own domain-draft lifecycle.
 
 ## Confirmation levels
 

@@ -6,7 +6,7 @@ import type {} from "@deepseek-ai/dsh-host-webserver";
 import { AssetGatewayError, type AssetGateway } from "./assets.js";
 import type { CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
-import { createBootstrap, createDrafts, reclassifyStoredDraft, reviewDraft } from "./projection.js";
+import { createAnalyzedDrafts, createBootstrap, reclassifyStoredDraft, reviewDraft } from "./projection.js";
 
 const MAX_BODY_BYTES = 16_384;
 
@@ -173,7 +173,8 @@ export async function handleNexusRequest(
       const input = await readJson(request) as Partial<CaptureRequest>;
       if (typeof input.sessionId !== "string" || input.sessionId.trim() === "") throw new RequestError(400, "缺少 sessionId。");
       if (typeof input.text !== "string") throw new RequestError(400, "缺少 text。");
-      const created = createDrafts(input.sessionId.trim(), input.text);
+      if (typeof input.analysis !== "object" || input.analysis === null) throw new RequestError(400, "缺少 DSH 完成后的分析结果。");
+      const created = createAnalyzedDrafts(input.sessionId.trim(), input.text, input.analysis);
       for (const draft of created) state.drafts.set(draft.id, draft);
       await state.persist();
       send(response, 201, created);
@@ -201,6 +202,23 @@ export async function handleNexusRequest(
 }
 
 export function registerNexusHttp(context: Context, state: NexusState, domains: DomainGateway, assets: AssetGateway): void {
+  void state.ready.then(async () => {
+    let changed = false;
+    for (const current of state.drafts.values()) {
+      try {
+        const receipt = await domains.reconcileConfirmedDraft(current);
+        if (receipt !== undefined && receipt !== current.receipt) {
+          state.drafts.set(current.id, { ...current, receipt });
+          changed = true;
+        }
+      } catch {
+        // Reconciliation is retryable on the next Host start; HTTP registration stays available.
+      }
+    }
+    if (changed) await state.persist();
+  }).catch(() => {
+    // State loading/persistence failures are still reported by normal HTTP requests.
+  });
   context.effect(() => context.webServer.register({
     kind: "prefix",
     path: "/shadow-nexus",

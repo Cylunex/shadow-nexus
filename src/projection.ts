@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   NEXUS_PROTOCOL_VERSION,
   type CaptureDraft,
+  type CaptureAnalysis,
   type DomainId,
   type DomainSummary,
   type NexusBootstrap,
@@ -155,6 +156,62 @@ export function createDrafts(sessionId: string, text: string, now = new Date()):
   const stamp = now.toISOString();
   const groupId = `draft_${stamp.replaceAll(/[-:.TZ]/gu, "")}_${randomUUID().slice(0, 8)}`;
   return routes.map((route) => buildDraft(sessionId, trimmed, route, routes.length === 1 ? groupId : `${groupId}_${route.domain}`, groupId, stamp));
+}
+
+const supportedAnalysisDomains = new Set<DomainId>(["health", "ledger", "travel", "archive", "foliant"]);
+const supportedRisks = new Set<RiskLevel>(["low", "medium", "high"]);
+
+/** Build review drafts from the completed DSH analysis, never from local keyword routing. */
+export function createAnalyzedDrafts(
+  sessionId: string,
+  text: string,
+  analysis: CaptureAnalysis,
+  now = new Date()
+): readonly CaptureDraft[] {
+  const trimmed = validateCapture(text);
+  if (analysis.version !== 1 || !/^capture_[A-Za-z0-9-]{8,80}$/u.test(analysis.captureId)) {
+    throw new Error("DSH 返回的采集分析标识无效。");
+  }
+  if (!Array.isArray(analysis.drafts) || analysis.drafts.length < 1 || analysis.drafts.length > 5) {
+    throw new Error("DSH 没有返回可确认的领域草稿。");
+  }
+  const createdAt = now.toISOString();
+  const groupId = `draft_${analysis.captureId}`;
+  const seen = new Set<DomainId>();
+  return analysis.drafts.map((item, index) => {
+    if (!supportedAnalysisDomains.has(item.domain) || seen.has(item.domain)) throw new Error("DSH 返回了重复或不支持的领域。");
+    seen.add(item.domain);
+    if (!supportedRisks.has(item.risk) || typeof item.intent !== "string" || !/^[a-z][a-z0-9.-]{2,80}$/u.test(item.intent)) {
+      throw new Error("DSH 返回的草稿类型无效。");
+    }
+    if (typeof item.summary !== "string" || item.summary.trim() === "" || item.summary.length > 240) {
+      throw new Error("DSH 返回的草稿摘要无效。");
+    }
+    if (typeof item.fields !== "object" || item.fields === null || Array.isArray(item.fields)) {
+      throw new Error("DSH 返回的结构化字段无效。");
+    }
+    const fields: Record<string, string> = { source: "shadow-nexus", original: trimmed };
+    for (const [key, value] of Object.entries(item.fields)) {
+      if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(key) || typeof value !== "string" || value.length > 500) {
+        throw new Error("DSH 返回的结构化字段无效。");
+      }
+      fields[key] = value;
+    }
+    return {
+      id: `${groupId}_${item.domain}_${String(index + 1)}`,
+      captureGroupId: groupId,
+      classificationVersion: 2,
+      sessionId,
+      text: trimmed,
+      domain: item.domain,
+      intent: item.intent,
+      summary: item.summary.trim(),
+      createdAt,
+      state: "pending",
+      risk: item.risk,
+      fields
+    };
+  });
 }
 
 export function createDraft(sessionId: string, text: string, now = new Date()): CaptureDraft {

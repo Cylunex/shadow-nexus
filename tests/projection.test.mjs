@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertTrustedRequest, createBootstrap, createDraft, createDrafts, createNexusState, nexusBasePathFromPluginUrl, reclassifyStoredDraft, reviewDraft } from "../lib/index.js";
+import { assertTrustedRequest, createAnalyzedDrafts, createBootstrap, createDraft, createDrafts, createNexusState, nexusBasePathFromPluginUrl, reclassifyStoredDraft, reviewDraft } from "../lib/index.js";
 
 test("derives Nexus API base path from its loaded plugin script", () => {
   assert.equal(nexusBasePathFromPluginUrl("https://nexus.example.com/plugins/@cylunex/shadow-nexus/client.js?rev=1"), "");
@@ -49,6 +49,34 @@ test("fans a mixed meal receipt out to reviewable Health and Ledger drafts", () 
   assert.equal(ledger?.fields.merchant, "张亮麻辣烫（百子湾店）");
   assert.equal(ledger?.fields.categoryKey, "food");
   assert.equal(ledger?.fields.title, "午餐 / 单人麻辣烫 · 张亮麻辣烫（百子湾店）");
+});
+
+test("uses completed DSH analysis as the capture routing authority", () => {
+  const text = "午餐吃了麻辣烫，支付 25.52 元";
+  const drafts = createAnalyzedDrafts("session-a", text, {
+    version: 1,
+    captureId: "capture_12345678-abcd",
+    drafts: [{
+      domain: "health",
+      intent: "health.record",
+      summary: "午餐 · 麻辣烫 · 约 679 kcal",
+      risk: "medium",
+      fields: { recordType: "meal", meal: "午餐", mealName: "麻辣烫", kcal: "679" }
+    }]
+  }, new Date("2026-08-25T08:00:00Z"));
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].domain, "health");
+  assert.equal(drafts[0].fields.original, text);
+  assert.equal(drafts[0].captureGroupId, "draft_capture_12345678-abcd");
+});
+
+test("rejects malformed or duplicate DSH analysis", () => {
+  const item = { domain: "health", intent: "health.record", summary: "午餐", risk: "medium", fields: { recordType: "meal" } };
+  assert.throws(() => createAnalyzedDrafts("session-a", "午餐", {
+    version: 1,
+    captureId: "capture_12345678-abcd",
+    drafts: [item, item]
+  }), /重复/u);
 });
 
 test("migrates a pending legacy Archive draft into deterministic domain drafts", () => {

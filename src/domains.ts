@@ -36,6 +36,12 @@ interface LedgerSummary {
 
 interface HealthDraftReceipt {
   readonly resource_uri: string;
+  readonly draft_id: string;
+}
+
+interface HealthCommitReceipt {
+  readonly resource_uri: string;
+  readonly status: "applied";
 }
 
 interface LedgerDraftReceipt {
@@ -49,6 +55,7 @@ export class DomainGatewayError extends Error {
 export interface DomainGateway {
   project(now?: Date): Promise<BootstrapProjection>;
   createDraft(draft: CaptureDraft): Promise<string>;
+  reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined>;
 }
 
 function environmentValue(name: string): string | undefined {
@@ -256,7 +263,7 @@ export class HttpDomainGateway implements DomainGateway {
   async createDraft(draft: CaptureDraft): Promise<string> {
     if (draft.domain === "health") {
       if (this.health === undefined) throw new DomainGatewayError(503, "Health 尚未连接。");
-      const result = await requestJson<HealthDraftReceipt>(
+      const draftResult = await requestJson<HealthDraftReceipt>(
         this.health,
         `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts`,
         this.timeoutMs,
@@ -266,7 +273,13 @@ export class HttpDomainGateway implements DomainGateway {
           body: JSON.stringify(healthPayload(draft))
         }
       );
-      return result.resource_uri;
+      const commitResult = await requestJson<HealthCommitReceipt>(
+        this.health,
+        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(draftResult.draft_id)}/commit`,
+        this.timeoutMs,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
+      );
+      return commitResult.resource_uri;
     }
     if (draft.domain === "ledger") {
       if (this.ledger === undefined) throw new DomainGatewayError(503, "Ledger 尚未连接。");
@@ -278,6 +291,19 @@ export class HttpDomainGateway implements DomainGateway {
       return result.record_ref;
     }
     throw new DomainGatewayError(503, "这个领域尚未接入 Nexus 写入适配器。");
+  }
+
+  async reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined> {
+    if (draft.state !== "approved" || draft.domain !== "health" || this.health === undefined) return undefined;
+    const match = draft.receipt?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u);
+    if (match?.[1] === undefined) return undefined;
+    const result = await requestJson<HealthCommitReceipt>(
+      this.health,
+      `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(match[1])}/commit`,
+      this.timeoutMs,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
+    );
+    return result.resource_uri;
   }
 }
 

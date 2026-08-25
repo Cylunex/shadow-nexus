@@ -32,7 +32,15 @@ async function fixtureServer() {
       bodies.push(body);
       if (body.record_type === "metric") assert.deepEqual(body.fields, { weight_kg: 68.4, sleep_hours: 7.5 });
       response.statusCode = 201;
-      response.end(JSON.stringify({ resource_uri: "shadow://health/drafts/hd_test" }));
+      response.end(JSON.stringify({ resource_uri: "shadow://health/drafts/hd_test", draft_id: "hd_test" }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/profiles/primary/drafts/hd_test/commit") {
+      response.end(JSON.stringify({ resource_uri: "shadow://health/diet/42", status: "applied" }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/profiles/primary/drafts/hd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/commit") {
+      response.end(JSON.stringify({ resource_uri: "shadow://health/diet/43", status: "applied" }));
       return;
     }
     if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts") {
@@ -76,7 +84,7 @@ test("projects Health and Ledger summaries and creates reversible domain drafts"
 
   const health = createDraft("session-a", "今天体重 68.4kg，睡眠 7.5 小时", new Date("2026-08-23T08:00:00Z"));
   const ledger = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
-  assert.equal(await gateway.createDraft(health), "shadow://health/drafts/hd_test");
+  assert.equal(await gateway.createDraft(health), "shadow://health/diet/42");
   assert.equal(await gateway.createDraft(ledger), "shadow://ledger/records/record-test");
   assert.ok(fixture.calls.every((call) => call.authorization?.startsWith("Bearer ")));
   assert.equal(fixture.calls.at(-1)?.idempotency, ledger.id);
@@ -106,6 +114,22 @@ test("sends confirmed meal nutrition and actual payment to separate domain draft
   assert.equal(ledgerBody.amount, "25.52");
   assert.equal(ledgerBody.title, "午餐 · 张亮麻辣烫");
   assert.equal(ledgerBody.category_key, "food");
+});
+
+test("reconciles an already confirmed legacy Health proposal into canonical data", async (context) => {
+  const fixture = await fixtureServer();
+  context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
+  process.env.SHADOW_HEALTH_BASE_URL = fixture.baseUrl;
+  process.env.SHADOW_HEALTH_AGENT_TOKEN = "health-test-token";
+  process.env.SHADOW_HEALTH_PROFILE_ID = "primary";
+  const gateway = new HttpDomainGateway(1_000);
+  const pending = createDraft("session-a", "午餐吃了麻辣烫", new Date("2026-08-23T08:00:00Z"));
+  const approved = {
+    ...pending,
+    state: "approved",
+    receipt: "shadow://health/drafts/hd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  };
+  assert.equal(await gateway.reconcileConfirmedDraft(approved), "shadow://health/diet/43");
 });
 
 test("keeps unsupported Health captures out of the domain API", async (context) => {

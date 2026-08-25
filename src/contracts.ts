@@ -87,6 +87,21 @@ export interface NexusAssetAttachment {
 export interface CaptureRequest {
   readonly sessionId: string;
   readonly text: string;
+  readonly analysis: CaptureAnalysis;
+}
+
+export interface CaptureAnalysisDraft {
+  readonly domain: DomainId;
+  readonly intent: string;
+  readonly summary: string;
+  readonly risk: RiskLevel;
+  readonly fields: Readonly<Record<string, string>>;
+}
+
+export interface CaptureAnalysis {
+  readonly version: 1;
+  readonly captureId: string;
+  readonly drafts: readonly CaptureAnalysisDraft[];
 }
 
 export interface ReviewRequest {
