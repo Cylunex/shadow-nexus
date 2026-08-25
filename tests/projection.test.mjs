@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertTrustedRequest, createBootstrap, createDraft, createNexusState, nexusBasePathFromPluginUrl, reviewDraft } from "../lib/index.js";
+import { assertTrustedRequest, createBootstrap, createDraft, createDrafts, createNexusState, nexusBasePathFromPluginUrl, reclassifyStoredDraft, reviewDraft } from "../lib/index.js";
 
 test("derives Nexus API base path from its loaded plugin script", () => {
   assert.equal(nexusBasePathFromPluginUrl("https://nexus.example.com/plugins/@cylunex/shadow-nexus/client.js?rev=1"), "");
@@ -24,6 +24,47 @@ test("routes ledger capture and extracts amount", () => {
   const draft = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
   assert.equal(draft.domain, "ledger");
   assert.equal(draft.fields.amount, "48");
+});
+
+test("fans a mixed meal receipt out to reviewable Health and Ledger drafts", () => {
+  const text = `商家名称：张亮麻辣烫（百子湾店）
+消费类型：午餐 / 单人麻辣烫
+实际支付：¥25.52
+餐次：午餐 / 单人麻辣烫
+总重量：**~570g**
+总热量：**~679 kcal**
+蛋白质：**~44.7 g**
+用途：营养记录、财务记账`;
+  const drafts = createDrafts("session-a", text, new Date("2026-08-23T08:00:00Z"));
+  assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
+  assert.equal(new Set(drafts.map((draft) => draft.captureGroupId)).size, 1);
+  const health = drafts.find((draft) => draft.domain === "health");
+  const ledger = drafts.find((draft) => draft.domain === "ledger");
+  assert.equal(health?.fields.meal, "午餐");
+  assert.equal(health?.fields.mealName, "单人麻辣烫");
+  assert.equal(health?.fields.amountG, "570");
+  assert.equal(health?.fields.kcal, "679");
+  assert.equal(health?.fields.proteinG, "44.7");
+  assert.equal(ledger?.fields.amount, "25.52");
+  assert.equal(ledger?.fields.merchant, "张亮麻辣烫（百子湾店）");
+  assert.equal(ledger?.fields.categoryKey, "food");
+  assert.equal(ledger?.fields.title, "午餐 / 单人麻辣烫 · 张亮麻辣烫（百子湾店）");
+});
+
+test("migrates a pending legacy Archive draft into deterministic domain drafts", () => {
+  const legacy = {
+    ...createDraft("session-a", "保存一条资料", new Date("2026-08-23T08:00:00Z")),
+    id: "draft_legacy",
+    classificationVersion: undefined,
+    captureGroupId: undefined,
+    domain: "archive",
+    intent: "archive.capture",
+    text: "午餐总热量 679 kcal，实际支付 ¥25.52，用于营养记录和财务记账"
+  };
+  const migrated = reclassifyStoredDraft(legacy);
+  assert.deepEqual(migrated.map((draft) => draft.id), ["draft_legacy_health", "draft_legacy_ledger"]);
+  assert.deepEqual(migrated.map((draft) => draft.domain), ["health", "ledger"]);
+  assert.ok(migrated.every((draft) => draft.classificationVersion === 2));
 });
 
 test("keeps unknown information in archive capture", () => {

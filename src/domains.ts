@@ -148,10 +148,20 @@ function healthPayload(draft: CaptureDraft): Record<string, unknown> {
     return { record_type: "metric", effective_date: effectiveDate, fields: metric, note: draft.text.slice(0, 500) };
   }
   if (fields.recordType === "meal" && fields.meal !== undefined) {
+    const meal: Record<string, unknown> = {
+      meal: fields.meal,
+      name: fields.mealName ?? draft.text.replaceAll(/\s+/gu, " ").slice(0, 120)
+    };
+    if (fields.amountG !== undefined) meal.amount_g = Number(fields.amountG);
+    if (fields.kcal !== undefined) meal.kcal = Number(fields.kcal);
+    if (fields.proteinG !== undefined) meal.protein_g = Number(fields.proteinG);
+    if (Object.values(meal).some((value) => typeof value === "number" && !Number.isFinite(value))) {
+      throw new DomainGatewayError(422, "饮食记录包含无效的营养数值。");
+    }
     return {
       record_type: "meal",
       effective_date: effectiveDate,
-      fields: { meal: fields.meal, name: draft.text.slice(0, 120) },
+      fields: meal,
       note: draft.text.slice(0, 500)
     };
   }
@@ -161,6 +171,10 @@ function healthPayload(draft: CaptureDraft): Record<string, unknown> {
       duration_min: Number(fields.durationMin)
     };
     if (fields.distanceKm !== undefined) workout.distance_km = Number(fields.distanceKm);
+    if (fields.rpe !== undefined) workout.rpe = Number(fields.rpe);
+    if (Object.values(workout).some((value) => typeof value === "number" && !Number.isFinite(value))) {
+      throw new DomainGatewayError(422, "运动记录包含无效数值。");
+    }
     return { record_type: "workout", effective_date: effectiveDate, fields: workout, note: draft.text.slice(0, 500) };
   }
   throw new DomainGatewayError(422, "这条健康记录还缺少可确认的数值；运动记录至少需要时长。");
@@ -172,14 +186,16 @@ function ledgerPayload(draft: CaptureDraft): Record<string, unknown> {
   if (amount === undefined || !["expense", "income", "refund"].includes(moneyType ?? "")) {
     throw new DomainGatewayError(422, "这条收支记录还缺少金额或收支类型。");
   }
-  return {
+  const payload: Record<string, unknown> = {
     occurred_at: draft.createdAt,
     timezone: "Asia/Shanghai",
     money_type: moneyType,
     amount,
     currency: draft.fields.currency ?? "CNY",
-    title: draft.text.slice(0, 160)
+    title: draft.fields.title ?? draft.text.replaceAll(/\s+/gu, " ").slice(0, 160)
   };
+  if (draft.fields.categoryKey !== undefined) payload.category_key = draft.fields.categoryKey;
+  return payload;
 }
 
 export class HttpDomainGateway implements DomainGateway {

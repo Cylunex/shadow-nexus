@@ -6,7 +6,7 @@ import type {} from "@deepseek-ai/dsh-host-webserver";
 import { AssetGatewayError, type AssetGateway } from "./assets.js";
 import type { CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
-import { createBootstrap, createDraft, reviewDraft } from "./projection.js";
+import { createBootstrap, createDrafts, reclassifyStoredDraft, reviewDraft } from "./projection.js";
 
 const MAX_BODY_BYTES = 16_384;
 
@@ -88,8 +88,7 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
           : [];
       for (const item of storedDrafts) {
         if (typeof item === "object" && item !== null && typeof (item as CaptureDraft).id === "string") {
-          const draft = item as CaptureDraft;
-          drafts.set(draft.id, draft);
+          for (const draft of reclassifyStoredDraft(item as CaptureDraft)) drafts.set(draft.id, draft);
         }
       }
       const storedAttachments = typeof value === "object" && value !== null && !Array.isArray(value)
@@ -174,10 +173,10 @@ export async function handleNexusRequest(
       const input = await readJson(request) as Partial<CaptureRequest>;
       if (typeof input.sessionId !== "string" || input.sessionId.trim() === "") throw new RequestError(400, "缺少 sessionId。");
       if (typeof input.text !== "string") throw new RequestError(400, "缺少 text。");
-      const draft = createDraft(input.sessionId.trim(), input.text);
-      state.drafts.set(draft.id, draft);
+      const created = createDrafts(input.sessionId.trim(), input.text);
+      for (const draft of created) state.drafts.set(draft.id, draft);
       await state.persist();
-      send(response, 201, draft);
+      send(response, 201, created);
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/review") {

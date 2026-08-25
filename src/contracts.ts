@@ -26,6 +26,8 @@ export interface TodaySignal {
 
 export interface CaptureDraft {
   readonly id: string;
+  readonly captureGroupId?: string;
+  readonly classificationVersion?: 2;
   readonly sessionId: string;
   readonly text: string;
   readonly domain: DomainId;

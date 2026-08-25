@@ -58,13 +58,13 @@ export async function uploadNexusAsset(sessionId: string, file: File): Promise<N
   }));
 }
 
-export async function captureNexus(sessions: ISessions, sessionId: string, text: string): Promise<CaptureDraft> {
+export async function captureNexus(sessions: ISessions, sessionId: string, text: string): Promise<readonly CaptureDraft[]> {
   const original = text.trim();
   if (original === "") throw new Error("记录内容不能为空。");
   const prompt = `[Shadow Nexus · Capture]\n请保留下面的原始信息并帮助理解；在用户于 Review 确认前，不要调用任何领域写入工具。\n\n${original}`;
   const accepted = await sessionFace(sessions, sessionId).prompt([{ type: "text", text: prompt }], "queue");
   if (!accepted.ok) throw new Error(`${accepted.error.code}: ${accepted.error.message}`);
-  return nexusJson<CaptureDraft>(await fetch(nexusEndpoint("capture", sessionId), {
+  return nexusJson<readonly CaptureDraft[]>(await fetch(nexusEndpoint("capture", sessionId), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ sessionId, text: original })

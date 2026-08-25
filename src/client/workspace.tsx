@@ -1,5 +1,5 @@
 import { type ISessions, type SessionId } from "@deepseek-ai/dsh-client-runtime/client";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { NexusAssetAttachment } from "../contracts.js";
 import { askNexus, captureNexus, uploadNexusAsset } from "./assistant.js";
 import { useNexusBootstrap } from "./api.js";
@@ -55,14 +55,31 @@ function sizeLabel(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const DEFAULT_COMPOSER_HEIGHT = 88;
+const MIN_COMPOSER_HEIGHT = 42;
+const COMPOSER_HEIGHT_KEY = "shadow-nexus:composer-height";
+
+function clampComposerHeight(value: number): number {
+  const viewportLimit = typeof window === "undefined" ? 520 : Math.max(MIN_COMPOSER_HEIGHT, Math.min(520, window.innerHeight * .55));
+  return Math.round(Math.min(viewportLimit, Math.max(MIN_COMPOSER_HEIGHT, value)));
+}
+
+function savedComposerHeight(): number {
+  if (typeof window === "undefined") return DEFAULT_COMPOSER_HEIGHT;
+  const value = Number(window.localStorage.getItem(COMPOSER_HEIGHT_KEY));
+  return Number.isFinite(value) && value > 0 ? clampComposerHeight(value) : DEFAULT_COMPOSER_HEIGHT;
+}
+
 function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, ask, capture }: AssistantBarProps) {
   const [mode, setMode] = useState<"ask" | "capture">("ask");
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<readonly DraftAttachment[]>([]);
+  const [composerHeight, setComposerHeight] = useState(savedComposerHeight);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
   const attachmentSnapshot = useRef(attachments);
+  const resizeSnapshot = useRef<{ readonly pointerId: number; readonly startY: number; readonly startHeight: number }>();
   attachmentSnapshot.current = attachments;
 
   const releaseAttachments = useCallback((items: readonly DraftAttachment[]) => {
@@ -70,6 +87,9 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
   }, []);
 
   useEffect(() => () => { releaseAttachments(attachmentSnapshot.current); }, [releaseAttachments]);
+  useEffect(() => {
+    window.localStorage.setItem(COMPOSER_HEIGHT_KEY, String(composerHeight));
+  }, [composerHeight]);
   useEffect(() => {
     releaseAttachments(attachmentSnapshot.current);
     setAttachments([]);
@@ -128,6 +148,24 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
       setBusy(false);
     }
   }
+
+  function startResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    resizeSnapshot.current = { pointerId: event.pointerId, startY: event.clientY, startHeight: composerHeight };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    const resize = resizeSnapshot.current;
+    if (resize?.pointerId !== event.pointerId) return;
+    setComposerHeight(clampComposerHeight(resize.startHeight + resize.startY - event.clientY));
+  }
+
+  function endResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (resizeSnapshot.current?.pointerId !== event.pointerId) return;
+    resizeSnapshot.current = undefined;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+
   return <section className="sn-assistant-bar" data-mode={mode} onDragOver={(event) => {
     if (sessionId !== undefined && !busy && assetUploadEnabled && event.dataTransfer.types.includes("Files")) event.preventDefault();
   }} onDrop={(event) => {
@@ -135,6 +173,15 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
     event.preventDefault();
     addFiles([...event.dataTransfer.files]);
   }}>
+    <button className="sn-assistant-resize" type="button" aria-label="拖动调整输入区高度" title="向上拖动放大输入区；双击恢复默认高度" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} onDoubleClick={() => setComposerHeight(DEFAULT_COMPOSER_HEIGHT)} onKeyDown={(event) => {
+      if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+        event.preventDefault();
+        setComposerHeight((current) => clampComposerHeight(current + (event.key === "ArrowUp" ? 16 : -16)));
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        setComposerHeight(DEFAULT_COMPOSER_HEIGHT);
+      }
+    }}><span /></button>
     <div className="sn-assistant-tools">
       <div className="sn-assistant-modes"><button type="button" data-active={mode === "ask"} onClick={() => setMode("ask")}>问一下</button><button type="button" data-active={mode === "capture"} disabled={attachments.length > 0} title={attachments.length > 0 ? "附件随“问一下”进入对话" : undefined} onClick={() => setMode("capture")}>记一下</button></div>
       <button className="sn-assistant-attach" type="button" aria-label="上传图片或文件" title={assetUploadEnabled ? "上传到 Shadow Asset 并附带到当前对话" : "Shadow Asset 尚未连接"} disabled={sessionId === undefined || busy || !assetUploadEnabled} onClick={() => fileInput.current?.click()}>＋</button>
@@ -143,7 +190,7 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
         event.target.value = "";
       }} />
     </div>
-    <textarea rows={1} maxLength={4000} value={text} disabled={sessionId === undefined || busy} placeholder={sessionId === undefined ? "先选择一个工作台会话" : mode === "ask" ? `在「${sessionTitle ?? sessionId}」中聊聊…` : "记录一条需要确认的信息…"} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
+    <textarea rows={3} style={{ height: composerHeight }} maxLength={4000} value={text} disabled={sessionId === undefined || busy} placeholder={sessionId === undefined ? "先选择一个工作台会话" : mode === "ask" ? `在「${sessionTitle ?? sessionId}」中聊聊…` : "记录一条需要确认的信息…"} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
         event.preventDefault();
         void submit();

@@ -14,6 +14,62 @@ function DomainMark({ domain }: { readonly domain: DomainId }) {
   return <span className="sn-domain-mark" data-domain={domain}>{marks[domain]}</span>;
 }
 
+const fieldLabels: Readonly<Record<string, string>> = {
+  source: "来源",
+  effectiveDate: "生效日期",
+  occurredAt: "发生时间",
+  timezone: "时区",
+  recordType: "记录类型",
+  weightKg: "体重",
+  sleepHours: "睡眠",
+  moodScore: "情绪评分",
+  distanceKm: "距离",
+  durationMin: "时长",
+  rpe: "运动强度",
+  meal: "餐次",
+  mealName: "内容",
+  amountG: "总重量",
+  kcal: "热量",
+  proteinG: "蛋白质",
+  amount: "金额",
+  currency: "币种",
+  moneyType: "收支类型",
+  merchant: "商家",
+  categoryKey: "分类",
+  title: "标题"
+};
+
+const fieldValueLabels: Readonly<Record<string, string>> = {
+  metric: "身体指标",
+  meal: "饮食",
+  workout: "运动",
+  expense: "支出",
+  income: "收入",
+  refund: "退款",
+  "shadow-nexus": "Nexus 采集",
+  food: "餐饮",
+  shopping: "购物",
+  transport: "交通",
+  housing: "居住",
+  services: "生活服务",
+  entertainment: "娱乐",
+  travel: "旅行",
+  health: "健康",
+  subscription: "订阅",
+  other: "其他"
+};
+
+function displayFieldValue(key: string, value: string): string {
+  if (key === "weightKg") return `${value} kg`;
+  if (key === "sleepHours") return `${value} 小时`;
+  if (key === "distanceKm") return `${value} km`;
+  if (key === "durationMin") return `${value} 分钟`;
+  if (key === "amountG" || key === "proteinG") return `${value} g`;
+  if (key === "kcal") return `${value} kcal`;
+  if (key === "amount") return `¥${value}`;
+  return fieldValueLabels[value] ?? value;
+}
+
 function SignalCard({ signal }: { readonly signal: TodaySignal }) {
   return <article className="sn-signal" data-tone={signal.tone}>
     <div className="sn-signal-top"><DomainMark domain={signal.domain} /><span>{signal.eyebrow}</span><time>{signal.time}</time></div>
@@ -87,9 +143,30 @@ export function CapturePage({ sessionId, sessions, navigate, reload, showConvers
   </div>;
 }
 
-function DraftCard({ draft, sourceTitle, reload }: { readonly draft: CaptureDraft; readonly sourceTitle: string; readonly reload: () => Promise<void> }) {
+function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
+  readonly draft: CaptureDraft;
+  readonly sourceTitle: string;
+  readonly target: DomainSummary | undefined;
+  readonly siblingCount: number;
+  readonly reload: () => Promise<void>;
+}) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const connectedTarget = (draft.domain === "health" || draft.domain === "ledger") && target?.status === "ready";
+  const targetLabel = target?.label ?? draft.domain;
+  const submittedKeys = draft.domain === "health"
+    ? ["recordType", "weightKg", "sleepHours", "moodScore", "distanceKm", "durationMin", "rpe", "meal", "mealName", "amountG", "kcal", "proteinG"]
+    : draft.domain === "ledger"
+      ? ["moneyType", "amount", "currency", "categoryKey", "title"]
+      : [];
+  const visibleFields: readonly (readonly [string, string])[] = [
+    ...(draft.domain === "health" ? [["effectiveDate", new Date(draft.createdAt).toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })] as const] : []),
+    ...(draft.domain === "ledger" ? [
+      ["occurredAt", new Date(draft.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })] as const,
+      ["timezone", "Asia/Shanghai"] as const
+    ] : []),
+    ...submittedKeys.flatMap((key): readonly (readonly [string, string])[] => draft.fields[key] === undefined ? [] : [[key, draft.fields[key]]])
+  ];
   async function decide(decision: "approve" | "reject") {
     setBusy(true);
     try {
@@ -107,9 +184,15 @@ function DraftCard({ draft, sourceTitle, reload }: { readonly draft: CaptureDraf
   return <article className="sn-draft">
     <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · 来源：{sourceTitle}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "低风险" : draft.risk === "medium" ? "需确认" : "高风险"}</em></header>
     <h3>{draft.summary}</h3>
-    <dl>{Object.entries(draft.fields).filter(([key]) => key !== "original").map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>
+    <div className="sn-draft-target" data-ready={connectedTarget}>
+      <DomainMark domain={draft.domain} />
+      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.domain === "health" ? "确认后创建 Health 待审核草稿，并附带原文前 500 字作为备注；不直接写入事实。" : "确认后只提交下面的金额字段与标题，原文继续留在 Nexus；不直接入账。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
+    </div>
+    {siblingCount > 1 && <p className="sn-draft-group">同一次记录已拆成 {siblingCount} 张领域草稿，请分别核对和确认。</p>}
+    <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{displayFieldValue(key, value)}</dd></div>)}</dl></section>
+    <details className="sn-draft-source"><summary>查看完整原文 <span>{draft.text.length} 字 · 可拖动右下角放大</span></summary><pre>{draft.text}</pre></details>
     {error !== undefined && <p className="sn-error">{error}</p>}
-    <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy} onClick={() => { void decide("approve"); }}>确认草稿</button></footer>
+    <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未接入"} onClick={() => { void decide("approve"); }}>{connectedTarget ? `提交 ${targetLabel} 草稿` : "暂不可提交"}</button></footer>
   </article>;
 }
 
@@ -118,9 +201,10 @@ export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
   const settled = data.drafts.filter((draft) => draft.state !== "pending");
   const summaries = sessions.list.getSnapshot().byId;
   const sourceTitle = (draft: CaptureDraft) => summaries[draft.sessionId as SessionId]?.displayTitle ?? draft.sessionId;
-  return <div className="sn-page">
+  const siblingCount = (draft: CaptureDraft) => data.drafts.filter((item) => item.captureGroupId !== undefined && item.captureGroupId === draft.captureGroupId).length;
+  return <div className="sn-page sn-review-page">
     <header className="sn-page-header"><span>REVIEW / ALL SESSIONS</span><h1>待确认，不等于已写入。</h1><p>这里汇总所有来源会话的草稿；来源 Session 只用于审计和回溯，不再隐藏待处理工作。</p></header>
-    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，草稿会进入这个全局队列。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={sourceTitle(draft)} reload={reload} />)}</div>}
+    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，草稿会进入这个全局队列。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={sourceTitle(draft)} target={data.domains.find((domain) => domain.id === draft.domain)} siblingCount={siblingCount(draft)} reload={reload} />)}</div>}
     {settled.length > 0 && <section className="sn-history"><h2>全局已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? "领域草稿已创建" : "已退回"}</em></p>)}</section>}
   </div>;
 }
