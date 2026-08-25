@@ -11,7 +11,8 @@ const fallback: NexusBootstrap = {
   focus: "工作台正在读取当前会话的领域投影。",
   signals: [],
   domains: [],
-  drafts: []
+  drafts: [],
+  assetUpload: { enabled: false, maxFilesPerMessage: 8 }
 };
 
 function nexusBasePath(): string {

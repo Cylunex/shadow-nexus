@@ -3,4 +3,4 @@ lib/
 coverage/
 *.tgz
 .DS_Store
-
+.shadow-nexus/

@@ -59,6 +59,8 @@ The first slice in this repository implements steps 1–4 as an explicit preview
 
 The persistent workbench bar separates two intents. **Ask** queues an ordinary, read-only Agent request into the displayed Session and opens the same official Conversation in the right dock. **Capture** preserves the original text and creates a reviewable structured draft. Domain pages may call the same Ask action with visible page context; Health uses it for the initial 30-day weight discussion. Asking never implies permission to create or mutate domain facts.
 
+Ask treats images and ordinary files identically. The Host performs the Shadow Asset three-step upload, retains the short-lived Upload Token only in memory, and exposes a read-only local view inside the DSH Session sandbox. The queued prompt contains the stable `shadow://nexus/...` reference and local read path; Shadow Asset remains authoritative, and DSH native attachment storage is not used by Nexus.
+
 Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work.
 
 ## Confirmation levels

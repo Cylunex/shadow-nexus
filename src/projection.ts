@@ -96,7 +96,8 @@ export function createBootstrap(
   _sessionId: string | undefined,
   drafts: readonly CaptureDraft[],
   now = new Date(),
-  projection: BootstrapProjection = disconnectedProjection
+  projection: BootstrapProjection = disconnectedProjection,
+  assetUploadEnabled = false
 ): NexusBootstrap {
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(now);
   const hour = now.getHours();
@@ -110,7 +111,8 @@ export function createBootstrap(
     focus: "把散落的信息收回来，再决定它们最终属于哪里。",
     signals: projection.signals,
     domains: projection.domains,
-    drafts
+    drafts,
+    assetUpload: { enabled: assetUploadEnabled, maxFilesPerMessage: 8 }
   };
 }
 

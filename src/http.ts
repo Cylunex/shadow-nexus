@@ -3,7 +3,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
-import type { CaptureDraft, CaptureRequest, ReviewRequest } from "./contracts.js";
+import { AssetGatewayError, type AssetGateway } from "./assets.js";
+import type { CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createBootstrap, createDraft, reviewDraft } from "./projection.js";
 
@@ -69,20 +70,36 @@ function sessionIdFrom(url: URL): string | undefined {
 
 export interface NexusState {
   readonly drafts: Map<string, CaptureDraft>;
+  readonly attachments: Map<string, NexusAssetAttachment>;
   readonly ready: Promise<void>;
   persist(): Promise<void>;
 }
 
 export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?.trim()): NexusState {
   const drafts = new Map<string, CaptureDraft>();
+  const attachments = new Map<string, NexusAssetAttachment>();
   const ready = filePath === undefined || filePath === "" ? Promise.resolve() : (async () => {
     try {
       const value = JSON.parse(await readFile(filePath, "utf8")) as unknown;
-      if (!Array.isArray(value)) return;
-      for (const item of value) {
+      const storedDrafts = Array.isArray(value)
+        ? value
+        : typeof value === "object" && value !== null && Array.isArray((value as { readonly drafts?: unknown }).drafts)
+          ? (value as { readonly drafts: unknown[] }).drafts
+          : [];
+      for (const item of storedDrafts) {
         if (typeof item === "object" && item !== null && typeof (item as CaptureDraft).id === "string") {
           const draft = item as CaptureDraft;
           drafts.set(draft.id, draft);
+        }
+      }
+      const storedAttachments = typeof value === "object" && value !== null && !Array.isArray(value)
+        && Array.isArray((value as { readonly attachments?: unknown }).attachments)
+        ? (value as { readonly attachments: unknown[] }).attachments
+        : [];
+      for (const item of storedAttachments) {
+        if (typeof item === "object" && item !== null && typeof (item as NexusAssetAttachment).id === "string") {
+          const attachment = item as NexusAssetAttachment;
+          attachments.set(attachment.id, attachment);
         }
       }
     } catch (error) {
@@ -92,13 +109,14 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
   let writes = Promise.resolve();
   return {
     drafts,
+    attachments,
     ready,
     persist: () => {
       if (filePath === undefined || filePath === "") return Promise.resolve();
       writes = writes.then(async () => {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
         const temporary = `${filePath}.tmp`;
-        await writeFile(temporary, `${JSON.stringify([...drafts.values()], null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        await writeFile(temporary, `${JSON.stringify({ version: 1, drafts: [...drafts.values()], attachments: [...attachments.values()] }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
         await rename(temporary, filePath);
       });
       return writes;
@@ -110,7 +128,8 @@ export async function handleNexusRequest(
   request: IncomingMessage,
   response: ServerResponse,
   state: NexusState,
-  domains: DomainGateway
+  domains: DomainGateway,
+  assets: AssetGateway
 ): Promise<void> {
   try {
     await state.ready;
@@ -119,7 +138,36 @@ export async function handleNexusRequest(
     if (request.method === "GET" && url.pathname === "/shadow-nexus/bootstrap") {
       const sessionId = sessionIdFrom(url);
       const projection = await domains.project();
-      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], new Date(), projection));
+      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], new Date(), projection, assets.configured));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/assets/init") {
+      const input = await readJson(request) as Partial<NexusAssetUploadInit>;
+      if (typeof input.sessionId !== "string" || typeof input.filename !== "string" || typeof input.contentType !== "string" || typeof input.sizeBytes !== "number") {
+        throw new RequestError(400, "附件元数据不完整。");
+      }
+      send(response, 201, await assets.initUpload({
+        sessionId: input.sessionId,
+        filename: input.filename,
+        contentType: input.contentType,
+        sizeBytes: input.sizeBytes
+      }));
+      return;
+    }
+    if (request.method === "PUT" && url.pathname === "/shadow-nexus/assets/content") {
+      const ticketId = url.searchParams.get("ticket")?.trim();
+      if (ticketId === undefined || ticketId === "" || ticketId.length > 128) throw new RequestError(400, "缺少上传票据。");
+      await assets.uploadContent(ticketId, request as AsyncIterable<Uint8Array>);
+      send(response, 200, { uploaded: true });
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/assets/complete") {
+      const input = await readJson(request);
+      if (typeof input.ticketId !== "string" || input.ticketId.trim() === "") throw new RequestError(400, "缺少上传票据。");
+      const attachment = await assets.completeUpload(input.ticketId.trim());
+      state.attachments.set(attachment.id, attachment);
+      await state.persist();
+      send(response, 201, attachment);
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/capture") {
@@ -147,16 +195,16 @@ export async function handleNexusRequest(
     }
     send(response, 404, { error: "Shadow Nexus route not found." });
   } catch (error) {
-    const status = error instanceof RequestError || error instanceof DomainGatewayError ? error.status : 500;
+    const status = error instanceof RequestError || error instanceof DomainGatewayError || error instanceof AssetGatewayError ? error.status : 500;
     const message = error instanceof Error ? error.message : "Shadow Nexus request failed.";
     send(response, status, { error: message });
   }
 }
 
-export function registerNexusHttp(context: Context, state: NexusState, domains: DomainGateway): void {
+export function registerNexusHttp(context: Context, state: NexusState, domains: DomainGateway, assets: AssetGateway): void {
   context.effect(() => context.webServer.register({
     kind: "prefix",
     path: "/shadow-nexus",
-    handler: (request, response) => handleNexusRequest(request, response, state, domains)
+    handler: (request, response) => handleNexusRequest(request, response, state, domains, assets)
   }), "shadow-nexus: workbench projection API");
 }

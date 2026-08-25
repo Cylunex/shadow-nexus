@@ -40,6 +40,12 @@ test("bootstrap projects the global review queue across source sessions", () => 
   const bootstrap = createBootstrap("session-a", [a, b], now);
   assert.equal(bootstrap.protocol, "shadow.nexus.v1");
   assert.deepEqual(bootstrap.drafts.map((draft) => draft.id), [a.id, b.id]);
+  assert.deepEqual(bootstrap.assetUpload, { enabled: false, maxFilesPerMessage: 8 });
+});
+
+test("bootstrap advertises the shared Asset upload path when configured", () => {
+  const bootstrap = createBootstrap("session-a", [], new Date("2026-08-23T08:00:00Z"), undefined, true);
+  assert.equal(bootstrap.assetUpload.enabled, true);
 });
 
 test("bootstrap without a selected session keeps global projections and review drafts", () => {
@@ -85,10 +91,24 @@ test("persists and reloads the review queue atomically", async (context) => {
   const state = createNexusState(file);
   await state.ready;
   const draft = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
+  const attachment = {
+    id: "attachment-a",
+    sessionId: "session-a",
+    assetId: "asset-a",
+    versionId: "version-a",
+    referenceUri: "shadow://nexus/conversations/test/attachments/attachment-a",
+    conversationPath: "/workspace/.shadow-nexus/assets/test/attachment-a-report.pdf",
+    filename: "report.pdf",
+    contentType: "application/pdf",
+    sizeBytes: 5,
+    createdAt: "2026-08-23T08:00:00.000Z"
+  };
   state.drafts.set(draft.id, draft);
+  state.attachments.set(attachment.id, attachment);
   await state.persist();
   assert.match(await readFile(file, "utf8"), new RegExp(draft.id, "u"));
   const restored = createNexusState(file);
   await restored.ready;
   assert.equal(restored.drafts.get(draft.id)?.summary, draft.summary);
+  assert.equal(restored.attachments.get(attachment.id)?.referenceUri, attachment.referenceUri);
 });

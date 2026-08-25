@@ -1,6 +1,7 @@
 import { type ISessions, type SessionId } from "@deepseek-ai/dsh-client-runtime/client";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { askNexus, captureNexus } from "./assistant.js";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import type { NexusAssetAttachment } from "../contracts.js";
+import { askNexus, captureNexus, uploadNexusAsset } from "./assistant.js";
 import { useNexusBootstrap } from "./api.js";
 import type { NexusAskContext, NexusModuleContext, NexusModuleGroup, NexusModuleRegistry } from "./contracts.js";
 import type { NexusLayoutState } from "./layout-state.js";
@@ -27,21 +28,98 @@ export interface NexusWorkspaceProps {
 interface AssistantBarProps {
   readonly sessionId: string | undefined;
   readonly sessionTitle: string | undefined;
-  readonly ask: (text: string) => Promise<void>;
+  readonly assetUploadEnabled: boolean;
+  readonly maxFiles: number;
+  readonly ask: (text: string, attachments: readonly NexusAssetAttachment[]) => Promise<void>;
   readonly capture: (text: string) => Promise<void>;
 }
 
-function AssistantBar({ sessionId, sessionTitle, ask, capture }: AssistantBarProps) {
+interface DraftAttachment {
+  readonly key: string;
+  readonly file: File;
+  readonly previewUrl: string | undefined;
+  readonly uploaded?: NexusAssetAttachment;
+}
+
+function draftAttachment(file: File): DraftAttachment {
+  return {
+    key: globalThis.crypto.randomUUID(),
+    file,
+    previewUrl: file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined
+  };
+}
+
+function sizeLabel(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, ask, capture }: AssistantBarProps) {
   const [mode, setMode] = useState<"ask" | "capture">("ask");
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<readonly DraftAttachment[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const attachmentSnapshot = useRef(attachments);
+  attachmentSnapshot.current = attachments;
+
+  const releaseAttachments = useCallback((items: readonly DraftAttachment[]) => {
+    for (const item of items) if (item.previewUrl !== undefined) URL.revokeObjectURL(item.previewUrl);
+  }, []);
+
+  useEffect(() => () => { releaseAttachments(attachmentSnapshot.current); }, [releaseAttachments]);
+  useEffect(() => {
+    releaseAttachments(attachmentSnapshot.current);
+    setAttachments([]);
+    setError(undefined);
+  }, [releaseAttachments, sessionId]);
+
+  function addFiles(files: readonly File[]) {
+    if (!assetUploadEnabled) {
+      setError("Shadow Asset 尚未连接，暂时不能上传附件。");
+      return;
+    }
+    const nonEmpty = files.filter((file) => file.size > 0);
+    if (nonEmpty.length !== files.length) {
+      setError("不能上传空文件。");
+      return;
+    }
+    if (attachments.length + nonEmpty.length > maxFiles) {
+      setError(`每条消息最多附带 ${String(maxFiles)} 个文件。`);
+      return;
+    }
+    setMode("ask");
+    setAttachments((current) => [...current, ...nonEmpty.map(draftAttachment)]);
+    setError(undefined);
+  }
+
+  function removeAttachment(key: string) {
+    setAttachments((current) => {
+      const removed = current.find((item) => item.key === key);
+      if (removed?.previewUrl !== undefined) URL.revokeObjectURL(removed.previewUrl);
+      return current.filter((item) => item.key !== key);
+    });
+  }
+
   async function submit() {
-    if (sessionId === undefined || text.trim() === "") return;
+    if (sessionId === undefined || (text.trim() === "" && (mode === "capture" || attachments.length === 0))) return;
     setBusy(true);
     try {
-      if (mode === "ask") await ask(text);
-      else await capture(text);
+      if (mode === "ask") {
+        const resolved = [...attachments];
+        for (let index = 0; index < resolved.length; index += 1) {
+          const item = resolved[index];
+          if (item === undefined || item.uploaded !== undefined) continue;
+          const uploaded = await uploadNexusAsset(sessionId, item.file);
+          resolved[index] = { ...item, uploaded };
+          setAttachments([...resolved]);
+        }
+        await ask(text, resolved.flatMap((item) => item.uploaded === undefined ? [] : [item.uploaded]));
+        releaseAttachments(resolved);
+        setAttachments([]);
+      } else await capture(text);
       setText("");
       setError(undefined);
     } catch (caught) {
@@ -50,16 +128,42 @@ function AssistantBar({ sessionId, sessionTitle, ask, capture }: AssistantBarPro
       setBusy(false);
     }
   }
-  return <section className="sn-assistant-bar" data-mode={mode}>
-    <div className="sn-assistant-modes"><button type="button" data-active={mode === "ask"} onClick={() => setMode("ask")}>问一下</button><button type="button" data-active={mode === "capture"} onClick={() => setMode("capture")}>记一下</button></div>
+  return <section className="sn-assistant-bar" data-mode={mode} onDragOver={(event) => {
+    if (sessionId !== undefined && !busy && assetUploadEnabled && event.dataTransfer.types.includes("Files")) event.preventDefault();
+  }} onDrop={(event) => {
+    if (sessionId === undefined || busy || !event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    addFiles([...event.dataTransfer.files]);
+  }}>
+    <div className="sn-assistant-tools">
+      <div className="sn-assistant-modes"><button type="button" data-active={mode === "ask"} onClick={() => setMode("ask")}>问一下</button><button type="button" data-active={mode === "capture"} disabled={attachments.length > 0} title={attachments.length > 0 ? "附件随“问一下”进入对话" : undefined} onClick={() => setMode("capture")}>记一下</button></div>
+      <button className="sn-assistant-attach" type="button" aria-label="上传图片或文件" title={assetUploadEnabled ? "上传到 Shadow Asset 并附带到当前对话" : "Shadow Asset 尚未连接"} disabled={sessionId === undefined || busy || !assetUploadEnabled} onClick={() => fileInput.current?.click()}>＋</button>
+      <input ref={fileInput} type="file" multiple hidden onChange={(event) => {
+        addFiles([...(event.target.files ?? [])]);
+        event.target.value = "";
+      }} />
+    </div>
     <textarea rows={1} maxLength={4000} value={text} disabled={sessionId === undefined || busy} placeholder={sessionId === undefined ? "先选择一个工作台会话" : mode === "ask" ? `在「${sessionTitle ?? sessionId}」中聊聊…` : "记录一条需要确认的信息…"} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
         event.preventDefault();
         void submit();
       }
+    }} onPaste={(event) => {
+      const files = [...event.clipboardData.files];
+      if (files.length > 0) {
+        event.preventDefault();
+        addFiles(files);
+      }
     }} />
-    <button className="sn-assistant-send" type="button" disabled={sessionId === undefined || busy || text.trim() === ""} onClick={() => { void submit(); }}>{busy ? "…" : "发送"}</button>
-    <small>{mode === "ask" ? "只读交流，不写入领域事实" : "生成草稿，Review 后才交给领域应用"}</small>
+    <button className="sn-assistant-send" type="button" disabled={sessionId === undefined || busy || (text.trim() === "" && (mode === "capture" || attachments.length === 0))} onClick={() => { void submit(); }}>{busy ? attachments.length > 0 ? "上传中…" : "发送中…" : "发送"}</button>
+    {attachments.length > 0 && <div className="sn-assistant-attachments">
+      {attachments.map((attachment) => <article key={attachment.key} data-uploaded={attachment.uploaded !== undefined}>
+        {attachment.previewUrl === undefined ? <span>FILE</span> : <img src={attachment.previewUrl} alt="" />}
+        <p><strong>{attachment.file.name || "asset"}</strong><small>{attachment.uploaded === undefined ? sizeLabel(attachment.file.size) : "已存入 Asset"}</small></p>
+        <button type="button" aria-label={`移除 ${attachment.file.name || "附件"}`} disabled={busy} onClick={() => removeAttachment(attachment.key)}>×</button>
+      </article>)}
+    </div>}
+    <small>{mode === "ask" ? assetUploadEnabled ? "图片和文件统一进入 Shadow Asset，再把只读路径交给当前会话" : "只读交流；Shadow Asset 尚未连接" : "生成草稿，Review 后才交给领域应用"}</small>
     {error !== undefined && <p>{error}</p>}
   </section>;
 }
@@ -83,9 +187,9 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
 
   const navigate = useCallback((route: string) => { navigation.navigate(route); }, [navigation]);
   const showConversation = useCallback(() => { navigation.showConversation(); }, [navigation]);
-  const ask = useCallback(async (text: string, askContext?: NexusAskContext) => {
+  const ask = useCallback(async (text: string, askContext?: NexusAskContext, attachments: readonly NexusAssetAttachment[] = []) => {
     if (sessionId === undefined) throw new Error("请先选择一个工作台会话。");
-    await askNexus(sessions, sessionId, text, askContext ?? { module: active?.route ?? "today" });
+    await askNexus(sessions, sessionId, text, askContext ?? { module: active?.route ?? "today" }, attachments);
     layout.openAssistant();
   }, [active?.route, layout, sessionId, sessions]);
   const capture = useCallback(async (text: string) => {
@@ -135,6 +239,6 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
           <Page sessionId={sessionId} sessions={sessions} data={data} loading={loading} error={error} reload={reload} navigate={navigate} showConversation={showConversation} ask={ask} />
         </NexusModuleBoundary>}
     </main>
-    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} ask={(text) => ask(text)} capture={capture} />
+    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} ask={(text, attachments) => ask(text, undefined, attachments)} capture={capture} />
   </div>;
 }

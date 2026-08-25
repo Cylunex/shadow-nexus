@@ -48,6 +48,38 @@ export interface NexusBootstrap {
   readonly signals: readonly TodaySignal[];
   readonly domains: readonly DomainSummary[];
   readonly drafts: readonly CaptureDraft[];
+  readonly assetUpload: {
+    readonly enabled: boolean;
+    readonly maxFilesPerMessage: number;
+  };
+}
+
+export interface NexusAssetUploadInit {
+  readonly sessionId: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
+export interface NexusAssetUploadTicket {
+  readonly ticketId: string;
+  readonly attachmentId: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+}
+
+export interface NexusAssetAttachment {
+  readonly id: string;
+  readonly sessionId: string;
+  readonly assetId: string;
+  readonly versionId: string;
+  readonly referenceUri: string;
+  readonly conversationPath: string;
+  readonly filename: string;
+  readonly contentType: string;
+  readonly sizeBytes: number;
+  readonly createdAt: string;
 }
 
 export interface CaptureRequest {
@@ -64,4 +96,3 @@ export interface ReviewRequest {
 export interface ApiError {
   readonly error: string;
 }
-

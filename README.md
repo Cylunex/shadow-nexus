@@ -2,7 +2,7 @@
 
 Shadow Nexus is the root Web shell for the Shadow profile on DeepSeek Harness. It owns the page, navigation, and domain workbench while keeping the official DSH Conversation as a dockable or full-screen Agent surface backed by the same Session.
 
-The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, an Ask/Capture bar, dock/full Conversation layouts, URL-backed navigation, a client module registry, session-backed capture, a global review queue, and versioned integration contracts. Health and Ledger can provide live bounded summaries and receive reversible drafts through their machine APIs. Domain applications keep ownership of their data and final writes.
+The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, an Ask/Capture bar, unified Shadow Asset attachments, dock/full Conversation layouts, URL-backed navigation, a client module registry, session-backed capture, a global review queue, and versioned integration contracts. Health and Ledger can provide live bounded summaries and receive reversible drafts through their machine APIs. Domain applications keep ownership of their data and final writes.
 
 The bundle disables the official `ui-layout` row and replaces it with the Nexus root. The official Conversation, tool, permission, attachment, workflow, and other feature plugins remain unchanged and render through the child slots owned by Nexus. Install this bundle in a dedicated `shadow` profile; retain the stock `web` profile as the recovery and upgrade-diagnostic surface.
 
@@ -18,3 +18,18 @@ pnpm run build
 ```
 
 Architecture and domain integration notes live in `docs/`; the public client registration contract is documented in `docs/client-modules.md`.
+
+## Shadow Asset attachments
+
+Images and other files use one upload path. Nexus uploads the original to Shadow Asset, keeps a read-only local view for the active DSH Session, and adds both the stable `shadow://` reference and readable path to the conversation prompt. The short-lived Asset upload token never enters the browser, Nexus state file, or DSH conversation log.
+
+Configure the host plugin with:
+
+```sh
+SHADOW_ASSET_BASE_URL=http://127.0.0.1:8400
+SHADOW_ASSET_SERVICE_TOKEN_FILE=/run/secrets/shadow-asset-service-token
+SHADOW_ASSET_OWNER_ID=00000000-0000-4000-8000-000000000000
+SHADOW_NEXUS_ASSET_VIEW_ROOT=/workspace/.shadow-nexus/assets
+```
+
+The base URL must use HTTPS, except for a loopback HTTP endpoint. The token file is read server-side on demand. `SHADOW_NEXUS_ASSET_VIEW_ROOT` must be readable from the DSH Session sandbox; the directory contains a cache/read view, while Shadow Asset remains the source of truth.
