@@ -166,21 +166,20 @@ export function createAnalyzedDrafts(
   sessionId: string,
   text: string,
   analysis: CaptureAnalysis,
-  now = new Date()
+  now = new Date(),
+  attachmentRefs: readonly string[] = []
 ): readonly CaptureDraft[] {
-  const trimmed = validateCapture(text);
+  const trimmed = text.trim() === "" && attachmentRefs.length > 0 ? "来自附件的批量记录" : validateCapture(text);
   if (analysis.version !== 1 || !/^capture_[A-Za-z0-9-]{8,80}$/u.test(analysis.captureId)) {
     throw new Error("DSH 返回的采集分析标识无效。");
   }
-  if (!Array.isArray(analysis.drafts) || analysis.drafts.length < 1 || analysis.drafts.length > 5) {
+  if (!Array.isArray(analysis.drafts) || analysis.drafts.length < 1 || analysis.drafts.length > 200) {
     throw new Error("DSH 没有返回可确认的领域草稿。");
   }
   const createdAt = now.toISOString();
   const groupId = `draft_${analysis.captureId}`;
-  const seen = new Set<DomainId>();
   return analysis.drafts.map((item, index) => {
-    if (!supportedAnalysisDomains.has(item.domain) || seen.has(item.domain)) throw new Error("DSH 返回了重复或不支持的领域。");
-    seen.add(item.domain);
+    if (!supportedAnalysisDomains.has(item.domain)) throw new Error("DSH 返回了不支持的领域。");
     if (!supportedRisks.has(item.risk) || typeof item.intent !== "string" || !/^[a-z][a-z0-9.-]{2,80}$/u.test(item.intent)) {
       throw new Error("DSH 返回的草稿类型无效。");
     }
@@ -209,7 +208,9 @@ export function createAnalyzedDrafts(
       createdAt,
       state: "pending",
       risk: item.risk,
-      fields
+      fields,
+      origin: "nexus",
+      attachmentRefs
     };
   });
 }

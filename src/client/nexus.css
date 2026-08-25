@@ -205,6 +205,15 @@ body[data-shadow-nexus-root="true"] { margin: 0; overflow: hidden; }
 .sn-boundary p { margin: 5px 0 0; font-size: 8px; line-height: 1.65; }
 
 .sn-review-page { width: min(100%, 1320px); }
+.sn-draft-group-panel { margin-bottom: 22px; padding: 14px; border: 1px solid rgba(111, 143, 207, .2); border-radius: 15px; background: rgba(9, 15, 28, .58); }
+.sn-draft-group-panel > header { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 13px; padding: 2px 3px; }
+.sn-draft-group-panel > header > div:first-child { min-width: 0; }
+.sn-draft-group-panel > header span { color: #7185ad; font-size: 8px; letter-spacing: .1em; text-transform: uppercase; }
+.sn-draft-group-panel > header h2 { margin: 5px 0 3px; color: #d5def0; font-size: 14px; font-weight: 540; }
+.sn-draft-group-panel > header p { margin: 0; color: #64728d; font-size: 8px; }
+.sn-draft-group-panel > header > div:last-child { display: flex; flex: 0 0 auto; gap: 7px; }
+.sn-draft-group-panel > header button { padding: 8px 11px; border: 1px solid var(--sn-line); border-radius: 7px; color: #8190aa; background: rgba(14, 22, 39, .8); cursor: pointer; font: 500 8px/1 inherit; }
+.sn-draft-group-panel > header button:disabled { opacity: .45; cursor: default; }
 .sn-draft-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; align-items: start; }
 .sn-draft { min-width: 0; padding: 18px; border: 1px solid var(--sn-line); border-radius: 13px; background: rgba(13, 20, 36, .8); }
 .sn-draft header { display: flex; align-items: center; gap: 9px; }
@@ -261,6 +270,7 @@ body[data-shadow-nexus-root="true"] { margin: 0; overflow: hidden; }
   .sn-signal { min-height: 118px; }
   .sn-domain-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sn-draft-list, .sn-domain-columns { grid-template-columns: 1fr; }
+  .sn-draft-group-panel > header { align-items: flex-start; flex-direction: column; }
   .sn-workspace-session { grid-template-columns: minmax(0, 1fr) auto; padding-inline: 14px; }
   .sn-workspace-session label > span, .sn-workspace-session > button { display: none; }
   .sn-workspace-session select { width: min(170px, 34vw); }

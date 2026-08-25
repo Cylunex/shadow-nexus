@@ -8,8 +8,8 @@ Each domain provides:
 
 1. a `shadow.domain.v1` manifest;
 2. read capabilities for allowed summaries and queues;
-3. draft validation capabilities;
-4. commit capabilities returning durable receipts;
+3. a model-hidden pending-draft listing scoped to the same Agent and owner/profile;
+4. model-hidden commit and reject operations with idempotent retry behavior;
 5. optional Surface contributions for domain-specific views;
 6. its DSH Skills and prompts in the domain repository.
 
@@ -20,7 +20,9 @@ The manifest shape is defined in `contracts/domain-manifest.schema.json`. It des
 ## Capability behavior
 
 - Read calls are side-effect free and must report freshness.
-- Draft calls normalize input and report missing or ambiguous fields.
+- The unified Nexus model Profile exposes reads only; models return Proposals instead of invoking draft APIs.
+- Domain draft calls normalize input and report missing or ambiguous fields, but remain available to independent domain Profiles when that product owns its own review UI.
+- Pending listing, commit and reject are hidden Host operations and must re-check machine identity plus owner/profile grants.
 - Commit calls require an idempotency key and return the created or updated domain identifier.
 - Destructive calls must be separately named; a generic `delete` capability is not accepted.
 - Every response includes a protocol version and a trace identifier.

@@ -27,6 +27,34 @@ async function fixtureServer() {
       response.end(JSON.stringify({ month: "2026-08", currency: "CNY", expense: "430.00", income: "1000.00", refund: "20.00", net_spending: "410.00" }));
       return;
     }
+    if (request.method === "GET" && request.url === "/api/machine/v1/agent/profiles/primary/drafts?limit=200") {
+      response.end(JSON.stringify({ items: [{
+        resource_uri: "shadow://health/drafts/hd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        draft_id: "hd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        profile_id: "primary",
+        record_type: "meal",
+        effective_date: "2026-08-22",
+        fields: { meal: "晚餐", name: "鸡胸肉", kcal: 420, protein_g: 35 },
+        note: "晚餐鸡胸肉",
+        created_at: "2026-08-22T12:00:00Z",
+        status: "pending"
+      }], truncated: false }));
+      return;
+    }
+    if (request.method === "GET" && request.url === "/api/machine/v1/agent/drafts?limit=200") {
+      response.end(JSON.stringify({ items: [{
+        record_ref: "shadow://ledger/records/33333333-3333-4333-8333-333333333333",
+        revision: 4,
+        created_at: "2026-08-22T13:00:00Z",
+        occurred_at: "2026-08-22T11:30:00+08:00",
+        money_type: "expense",
+        amount: "36.50",
+        currency: "CNY",
+        category_key: "food",
+        title: "晚餐"
+      }], truncated: false }));
+      return;
+    }
     if (request.method === "POST" && request.url?.endsWith("/profiles/primary/drafts")) {
       const body = await jsonBody(request);
       bodies.push(body);
@@ -41,6 +69,14 @@ async function fixtureServer() {
     }
     if (request.method === "POST" && request.url === "/api/machine/v1/agent/profiles/primary/drafts/hd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/commit") {
       response.end(JSON.stringify({ resource_uri: "shadow://health/diet/43", status: "applied" }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/profiles/primary/drafts/hd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/commit") {
+      response.end(JSON.stringify({ resource_uri: "shadow://health/diet/44", status: "applied" }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/profiles/primary/drafts/hd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/reject") {
+      response.end(JSON.stringify({ resource_uri: "shadow://health/drafts/hd_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", status: "rejected" }));
       return;
     }
     if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts") {
@@ -59,6 +95,16 @@ async function fixtureServer() {
     if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts/22222222-2222-4222-8222-222222222222/commit") {
       bodies.push(await jsonBody(request));
       response.end(JSON.stringify({ record_ref: "shadow://ledger/records/22222222-2222-4222-8222-222222222222", state: "confirmed", revision: 2, replayed: false }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts/33333333-3333-4333-8333-333333333333/commit") {
+      bodies.push(await jsonBody(request));
+      response.end(JSON.stringify({ record_ref: "shadow://ledger/records/33333333-3333-4333-8333-333333333333", state: "confirmed", revision: 5 }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts/33333333-3333-4333-8333-333333333333/reject") {
+      bodies.push(await jsonBody(request));
+      response.end(JSON.stringify({ record_ref: "shadow://ledger/records/33333333-3333-4333-8333-333333333333", state: "rejected" }));
       return;
     }
     response.statusCode = 404;
@@ -171,4 +217,26 @@ test("keeps unsupported Health captures out of the domain API", async (context) 
   const gateway = new HttpDomainGateway(1_000);
   const draft = createDraft("session-a", "今天跑步感觉不错", new Date("2026-08-23T08:00:00Z"));
   await assert.rejects(() => gateway.createDraft(draft), /至少需要时长/u);
+});
+
+test("federates existing domain drafts into Nexus without creating duplicates", async (context) => {
+  const fixture = await fixtureServer();
+  context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
+  process.env.SHADOW_HEALTH_BASE_URL = fixture.baseUrl;
+  process.env.SHADOW_HEALTH_AGENT_TOKEN = "health-test-token";
+  process.env.SHADOW_HEALTH_PROFILE_ID = "primary";
+  process.env.SHADOW_LEDGER_BASE_URL = fixture.baseUrl;
+  process.env.SHADOW_LEDGER_AGENT_TOKEN = "ledger-test-token";
+  const gateway = new HttpDomainGateway(1_000);
+  const drafts = await gateway.discoverDrafts();
+  assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
+  assert.ok(drafts.every((draft) => draft.origin === "domain"));
+  assert.equal(drafts[0].fields.effectiveDate, "2026-08-22");
+  assert.equal(drafts[1].fields.occurredAt, "2026-08-22T11:30:00+08:00");
+  assert.equal(await gateway.createDraft(drafts[0]), "shadow://health/diet/44");
+  assert.equal(await gateway.createDraft(drafts[1]), "shadow://ledger/records/33333333-3333-4333-8333-333333333333");
+  await gateway.rejectDraft(drafts[0]);
+  await gateway.rejectDraft(drafts[1]);
+  assert.deepEqual(fixture.bodies.slice(-2), [{ revision: 4 }, { revision: 4 }]);
+  assert.equal(fixture.calls.filter((call) => call.method === "POST" && call.url === "/api/machine/v1/agent/drafts").length, 0);
 });

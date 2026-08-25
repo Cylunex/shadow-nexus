@@ -54,13 +54,43 @@ interface LedgerCommitReceipt {
   readonly state: "confirmed";
 }
 
+interface HealthPendingDraft {
+  readonly resource_uri: string;
+  readonly draft_id: string;
+  readonly profile_id: string;
+  readonly record_type: "metric" | "meal" | "workout";
+  readonly effective_date: string;
+  readonly fields: Readonly<Record<string, string | number>>;
+  readonly note: string;
+  readonly created_at: string;
+}
+
+interface LedgerPendingDraft {
+  readonly record_ref: string;
+  readonly revision: number;
+  readonly created_at: string;
+  readonly occurred_at: string;
+  readonly money_type: "expense" | "income" | "refund" | null;
+  readonly amount: string | null;
+  readonly currency: string | null;
+  readonly category_key: string | null;
+  readonly title: string;
+}
+
+interface PendingDraftList<T> {
+  readonly items: readonly T[];
+  readonly truncated: boolean;
+}
+
 export class DomainGatewayError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
 export interface DomainGateway {
   project(now?: Date): Promise<BootstrapProjection>;
+  discoverDrafts(): Promise<readonly CaptureDraft[]>;
   createDraft(draft: CaptureDraft): Promise<string>;
+  rejectDraft(draft: CaptureDraft): Promise<void>;
   reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined>;
 }
 
@@ -149,7 +179,7 @@ async function requestJson<T>(
 
 function healthPayload(draft: CaptureDraft): Record<string, unknown> {
   const fields = draft.fields;
-  const effectiveDate = localDate(new Date(draft.createdAt));
+  const effectiveDate = fields.effectiveDate ?? localDate(new Date(draft.createdAt));
   if (fields.recordType === "metric") {
     const metric: Record<string, number> = {};
     if (fields.weightKg !== undefined) metric.weight_kg = Number(fields.weightKg);
@@ -200,7 +230,7 @@ function ledgerPayload(draft: CaptureDraft): Record<string, unknown> {
     throw new DomainGatewayError(422, "这条收支记录还缺少金额或收支类型。");
   }
   const payload: Record<string, unknown> = {
-    occurred_at: draft.createdAt,
+    occurred_at: draft.fields.occurredAt ?? draft.createdAt,
     timezone: "Asia/Shanghai",
     money_type: moneyType,
     amount,
@@ -209,6 +239,75 @@ function ledgerPayload(draft: CaptureDraft): Record<string, unknown> {
   };
   if (draft.fields.categoryKey !== undefined) payload.category_key = draft.fields.categoryKey;
   return payload;
+}
+
+function stringFields(fields: Readonly<Record<string, string | number>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, String(value)]));
+}
+
+function healthPendingDraft(item: HealthPendingDraft): CaptureDraft {
+  const raw = stringFields(item.fields);
+  const fields: Record<string, string> = {
+    source: "shadow-health",
+    recordType: item.record_type,
+    effectiveDate: item.effective_date
+  };
+  const aliases: Readonly<Record<string, string>> = {
+    weight_kg: "weightKg", sleep_hours: "sleepHours", mood_score: "moodScore",
+    name: "mealName", amount_g: "amountG", protein_g: "proteinG",
+    duration_min: "durationMin", distance_km: "distanceKm", session_type: "sessionType"
+  };
+  for (const [key, value] of Object.entries(raw)) fields[aliases[key] ?? key] = value;
+  const summary = item.record_type === "meal"
+    ? [fields.meal, fields.mealName, fields.kcal === undefined ? undefined : `${fields.kcal} kcal`].filter(Boolean).join(" · ")
+    : item.record_type === "metric"
+      ? [fields.weightKg === undefined ? undefined : `${fields.weightKg} kg`, fields.sleepHours === undefined ? undefined : `睡眠 ${fields.sleepHours} h`, fields.moodScore === undefined ? undefined : `心情 ${fields.moodScore}`].filter(Boolean).join(" · ")
+      : [fields.sessionType ?? "运动", fields.durationMin === undefined ? undefined : `${fields.durationMin} 分钟`, fields.distanceKm === undefined ? undefined : `${fields.distanceKm} km`].filter(Boolean).join(" · ");
+  return {
+    id: `federated_health_${item.draft_id}`,
+    captureGroupId: "federated_health_pending",
+    classificationVersion: 2,
+    sessionId: `domain:health:${item.profile_id}`,
+    text: item.note || summary || "Health 待确认草稿",
+    domain: "health",
+    intent: `health.${item.record_type}`,
+    summary: summary || "Health 待确认草稿",
+    createdAt: item.created_at,
+    state: "pending",
+    risk: "medium",
+    fields,
+    origin: "domain",
+    domainDraftRef: item.resource_uri
+  };
+}
+
+function ledgerPendingDraft(item: LedgerPendingDraft): CaptureDraft {
+  const amount = item.amount ?? "";
+  return {
+    id: `federated_ledger_${item.record_ref.split("/").at(-1) ?? item.revision}`,
+    captureGroupId: "federated_ledger_pending",
+    classificationVersion: 2,
+    sessionId: "domain:ledger",
+    text: item.title || "Ledger 待确认草稿",
+    domain: "ledger",
+    intent: "ledger.transaction",
+    summary: [item.title, amount === "" ? undefined : `${item.currency ?? "CNY"} ${amount}`].filter(Boolean).join(" · "),
+    createdAt: item.created_at,
+    state: "pending",
+    risk: "medium",
+    fields: {
+      source: "shadow-ledger",
+      occurredAt: item.occurred_at,
+      ...(item.money_type === null ? {} : { moneyType: item.money_type }),
+      ...(amount === "" ? {} : { amount }),
+      currency: item.currency ?? "CNY",
+      ...(item.category_key === null ? {} : { categoryKey: item.category_key }),
+      title: item.title
+    },
+    origin: "domain",
+    domainDraftRef: item.record_ref,
+    domainRevision: item.revision
+  };
 }
 
 export class HttpDomainGateway implements DomainGateway {
@@ -266,9 +365,45 @@ export class HttpDomainGateway implements DomainGateway {
     return { mode: connected > 0 ? "connected" : "preview", domains, signals };
   }
 
+  async discoverDrafts(): Promise<readonly CaptureDraft[]> {
+    const discovered: CaptureDraft[] = [];
+    await Promise.all([
+      (async () => {
+        if (this.health === undefined) return;
+        try {
+          const result = await requestJson<PendingDraftList<HealthPendingDraft>>(
+            this.health,
+            `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts?limit=200`,
+            this.timeoutMs
+          );
+          discovered.push(...result.items.map(healthPendingDraft));
+        } catch { /* One unavailable domain must not hide the other review queue. */ }
+      })(),
+      (async () => {
+        if (this.ledger === undefined) return;
+        try {
+          const result = await requestJson<PendingDraftList<LedgerPendingDraft>>(this.ledger, "/api/machine/v1/agent/drafts?limit=200", this.timeoutMs);
+          discovered.push(...result.items.map(ledgerPendingDraft));
+        } catch { /* One unavailable domain must not hide the other review queue. */ }
+      })()
+    ]);
+    return discovered.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
   async createDraft(draft: CaptureDraft): Promise<string> {
     if (draft.domain === "health") {
       if (this.health === undefined) throw new DomainGatewayError(503, "Health 尚未连接。");
+      if (draft.origin === "domain") {
+        const draftId = draft.domainDraftRef?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u)?.[1];
+        if (draftId === undefined) throw new DomainGatewayError(422, "Health 草稿引用无效。");
+        const result = await requestJson<HealthCommitReceipt>(
+          this.health,
+          `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(draftId)}/commit`,
+          this.timeoutMs,
+          { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
+        );
+        return result.resource_uri;
+      }
       const draftResult = await requestJson<HealthDraftReceipt>(
         this.health,
         `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts`,
@@ -289,6 +424,17 @@ export class HttpDomainGateway implements DomainGateway {
     }
     if (draft.domain === "ledger") {
       if (this.ledger === undefined) throw new DomainGatewayError(503, "Ledger 尚未连接。");
+      if (draft.origin === "domain") {
+        const recordId = draft.domainDraftRef?.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u)?.[1];
+        if (recordId === undefined || draft.domainRevision === undefined) throw new DomainGatewayError(422, "Ledger 草稿引用无效。");
+        const result = await requestJson<LedgerCommitReceipt>(
+          this.ledger,
+          `/api/machine/v1/agent/drafts/${encodeURIComponent(recordId)}/commit`,
+          this.timeoutMs,
+          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: draft.domainRevision }) }
+        );
+        return result.record_ref;
+      }
       const draftResult = await requestJson<LedgerDraftReceipt>(this.ledger, "/api/machine/v1/agent/drafts", this.timeoutMs, {
         method: "POST",
         headers: { "content-type": "application/json", "idempotency-key": draft.id },
@@ -305,6 +451,33 @@ export class HttpDomainGateway implements DomainGateway {
       return commitResult.record_ref;
     }
     throw new DomainGatewayError(503, "这个领域尚未接入 Nexus 写入适配器。");
+  }
+
+  async rejectDraft(draft: CaptureDraft): Promise<void> {
+    if (draft.origin !== "domain") return;
+    if (draft.domain === "health") {
+      if (this.health === undefined) throw new DomainGatewayError(503, "Health 尚未连接。");
+      const draftId = draft.domainDraftRef?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u)?.[1];
+      if (draftId === undefined) throw new DomainGatewayError(422, "Health 草稿引用无效。");
+      await requestJson<unknown>(
+        this.health,
+        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(draftId)}/reject`,
+        this.timeoutMs,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
+      );
+      return;
+    }
+    if (draft.domain === "ledger") {
+      if (this.ledger === undefined) throw new DomainGatewayError(503, "Ledger 尚未连接。");
+      const recordId = draft.domainDraftRef?.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u)?.[1];
+      if (recordId === undefined || draft.domainRevision === undefined) throw new DomainGatewayError(422, "Ledger 草稿引用无效。");
+      await requestJson<unknown>(
+        this.ledger,
+        `/api/machine/v1/agent/drafts/${encodeURIComponent(recordId)}/reject`,
+        this.timeoutMs,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: draft.domainRevision }) }
+      );
+    }
   }
 
   async reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined> {

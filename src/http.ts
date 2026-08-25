@@ -4,11 +4,11 @@ import { dirname } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import { AssetGatewayError, type AssetGateway } from "./assets.js";
-import type { CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
+import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createAnalyzedDrafts, createBootstrap, reclassifyStoredDraft, reviewDraft } from "./projection.js";
 
-const MAX_BODY_BYTES = 16_384;
+const MAX_BODY_BYTES = 1_048_576;
 
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -115,12 +115,23 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
       writes = writes.then(async () => {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
         const temporary = `${filePath}.tmp`;
-        await writeFile(temporary, `${JSON.stringify({ version: 1, drafts: [...drafts.values()], attachments: [...attachments.values()] }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        await writeFile(temporary, `${JSON.stringify({ version: 2, drafts: [...drafts.values()], attachments: [...attachments.values()] }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
         await rename(temporary, filePath);
       });
       return writes;
     }
   };
+}
+
+async function syncFederatedDrafts(state: NexusState, domains: DomainGateway): Promise<void> {
+  const discovered = await domains.discoverDrafts();
+  let changed = false;
+  for (const draft of discovered) {
+    if (state.drafts.has(draft.id)) continue;
+    state.drafts.set(draft.id, draft);
+    changed = true;
+  }
+  if (changed) await state.persist();
 }
 
 export async function handleNexusRequest(
@@ -136,6 +147,7 @@ export async function handleNexusRequest(
     const url = new URL(request.url ?? "/", "http://dsh.local");
     if (request.method === "GET" && url.pathname === "/shadow-nexus/bootstrap") {
       const sessionId = sessionIdFrom(url);
+      await syncFederatedDrafts(state, domains);
       const projection = await domains.project();
       send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], new Date(), projection, assets.configured));
       return;
@@ -174,7 +186,21 @@ export async function handleNexusRequest(
       if (typeof input.sessionId !== "string" || input.sessionId.trim() === "") throw new RequestError(400, "缺少 sessionId。");
       if (typeof input.text !== "string") throw new RequestError(400, "缺少 text。");
       if (typeof input.analysis !== "object" || input.analysis === null) throw new RequestError(400, "缺少 DSH 完成后的分析结果。");
-      const created = createAnalyzedDrafts(input.sessionId.trim(), input.text, input.analysis);
+      const attachmentIds = input.attachmentIds ?? [];
+      if (!Array.isArray(attachmentIds) || attachmentIds.length > 8 || attachmentIds.some((id) => typeof id !== "string")) {
+        throw new RequestError(400, "附件标识无效。");
+      }
+      const attachments = attachmentIds.map((id) => state.attachments.get(id));
+      if (attachments.some((attachment) => attachment === undefined || attachment.sessionId !== input.sessionId)) {
+        throw new RequestError(404, "没有找到这组附件。");
+      }
+      const created = createAnalyzedDrafts(
+        input.sessionId.trim(),
+        input.text,
+        input.analysis,
+        new Date(),
+        attachments.flatMap((attachment) => attachment === undefined ? [] : [attachment.referenceUri])
+      );
       for (const draft of created) state.drafts.set(draft.id, draft);
       await state.persist();
       send(response, 201, created);
@@ -187,9 +213,30 @@ export async function handleNexusRequest(
       const current = state.drafts.get(input.draftId);
       if (current === undefined || current.sessionId !== input.sessionId) throw new RequestError(404, "没有找到这个草稿。");
       const receipt = input.decision === "approve" ? await domains.createDraft(current) : undefined;
+      if (input.decision === "reject") await domains.rejectDraft(current);
       const updated = reviewDraft(current, input.decision, new Date(), receipt);
       state.drafts.set(updated.id, updated);
       await state.persist();
+      send(response, 200, updated);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/review/batch") {
+      const input = await readJson(request) as Partial<BatchReviewRequest>;
+      if (typeof input.captureGroupId !== "string" || input.captureGroupId.trim() === "") throw new RequestError(400, "缺少草稿组标识。");
+      if (input.decision !== "approve" && input.decision !== "reject") throw new RequestError(400, "decision 无效。");
+      const pending = [...state.drafts.values()]
+        .filter((draft) => draft.captureGroupId === input.captureGroupId && draft.state === "pending")
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+      if (pending.length === 0) throw new RequestError(404, "没有找到待处理的草稿组。");
+      const updated: CaptureDraft[] = [];
+      for (const current of pending) {
+        const receipt = input.decision === "approve" ? await domains.createDraft(current) : undefined;
+        if (input.decision === "reject") await domains.rejectDraft(current);
+        const result = reviewDraft(current, input.decision, new Date(), receipt);
+        state.drafts.set(result.id, result);
+        updated.push(result);
+        await state.persist();
+      }
       send(response, 200, updated);
       return;
     }
@@ -203,6 +250,7 @@ export async function handleNexusRequest(
 
 export function registerNexusHttp(context: Context, state: NexusState, domains: DomainGateway, assets: AssetGateway): void {
   void state.ready.then(async () => {
+    await syncFederatedDrafts(state, domains);
     let changed = false;
     for (const current of state.drafts.values()) {
       try {

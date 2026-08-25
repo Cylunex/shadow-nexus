@@ -128,7 +128,7 @@ export function CapturePage({ sessionId, sessions, navigate, reload, showConvers
   }, [navigate, reload, sessionId, sessions, text]);
 
   return <div className="sn-page sn-capture-page">
-    <header className="sn-page-header"><span>CAPTURE</span><h1>先记下来，归属可以稍后决定。</h1><p>Shadow 会把原文保留在当前 DSH 会话，并生成结构化草稿供你确认。</p></header>
+    <header className="sn-page-header"><span>CAPTURE</span><h1>先记下来，归属可以稍后决定。</h1><p>Shadow 会把原文保留在当前 DSH 会话，并生成结构化 Proposal 供你确认；图片和文件可从底部“＋”统一上传。</p></header>
     {sessionId === undefined
       ? <div className="sn-empty"><span>◇</span><h2>需要一个 DSH 会话</h2><p>打开对话并选择工作区，随后即可回到这里快速记录。</p><button className="sn-primary" type="button" onClick={showConversation}>打开对话</button></div>
       : <>
@@ -160,9 +160,9 @@ function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
       ? ["moneyType", "amount", "currency", "categoryKey", "title"]
       : [];
   const visibleFields: readonly (readonly [string, string])[] = [
-    ...(draft.domain === "health" ? [["effectiveDate", new Date(draft.createdAt).toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })] as const] : []),
+    ...(draft.domain === "health" ? [["effectiveDate", draft.fields.effectiveDate ?? new Date(draft.createdAt).toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" })] as const] : []),
     ...(draft.domain === "ledger" ? [
-      ["occurredAt", new Date(draft.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })] as const,
+      ["occurredAt", draft.fields.occurredAt ?? new Date(draft.createdAt).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })] as const,
       ["timezone", "Asia/Shanghai"] as const
     ] : []),
     ...submittedKeys.flatMap((key): readonly (readonly [string, string])[] => draft.fields[key] === undefined ? [] : [[key, draft.fields[key]]])
@@ -186,7 +186,7 @@ function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
     <h3>{draft.summary}</h3>
     <div className="sn-draft-target" data-ready={connectedTarget}>
       <DomainMark domain={draft.domain} />
-      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.domain === "health" ? "你在这里确认后，Nexus 会先创建可审计的 Health 草稿，再立即写成正式健康记录；无需到 Health 二次确认。" : "你在这里确认后，Nexus 会先创建可审计的 Ledger 草稿，再提交同一条记录正式入账；原文继续留在 Nexus。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
+      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.origin === "domain" ? `这是 ${targetLabel} 已有的 Agent 草稿；Nexus 只集中审核，确认时直接提交原草稿，不会重复创建。` : draft.domain === "health" ? "你在这里确认后，Nexus 会先创建可审计的 Health 草稿，再立即写成正式健康记录；无需到 Health 二次确认。" : "你在这里确认后，Nexus 会先创建可审计的 Ledger 草稿，再提交同一条记录正式入账；原文继续留在 Nexus。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
     </div>
     {siblingCount > 1 && <p className="sn-draft-group">同一次记录已拆成 {siblingCount} 张领域草稿，请分别核对和确认。</p>}
     <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{displayFieldValue(key, value)}</dd></div>)}</dl></section>
@@ -196,15 +196,65 @@ function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
   </article>;
 }
 
+function DraftGroup({ drafts, sourceTitle, domains, reload }: {
+  readonly drafts: readonly CaptureDraft[];
+  readonly sourceTitle: (draft: CaptureDraft) => string;
+  readonly domains: readonly DomainSummary[];
+  readonly reload: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const groupId = drafts[0]?.captureGroupId;
+  const confirmable = drafts.every((draft) => (draft.domain === "health" || draft.domain === "ledger") && domains.find((domain) => domain.id === draft.domain)?.status === "ready");
+  const ledgerTotal = drafts.reduce((total, draft) => draft.domain === "ledger" && draft.fields.moneyType === "expense" ? total + Number(draft.fields.amount ?? 0) : total, 0);
+  const title = drafts.every((draft) => draft.origin === "domain")
+    ? `${domains.find((domain) => domain.id === drafts[0]?.domain)?.label ?? "领域"} Agent 待审核`
+    : "同次采集 Proposal";
+
+  async function decideAll(decision: "approve" | "reject") {
+    if (groupId === undefined) return;
+    setBusy(true);
+    try {
+      await nexusJson<readonly CaptureDraft[]>(await fetch(nexusEndpoint("review/batch"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ captureGroupId: groupId, decision })
+      }));
+      setError(undefined);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "批量处理草稿失败；已完成的项目会保留结果。");
+    } finally {
+      await reload();
+      setBusy(false);
+    }
+  }
+
+  return <section className="sn-draft-group-panel">
+    <header><div><span>{title}</span><h2>{drafts.length} 条待确认{ledgerTotal > 0 ? ` · 支出合计 ¥${ledgerTotal.toFixed(2)}` : ""}</h2><p>逐条展开核对，也可以整组确认或退回；批量处理会逐条保存进度。</p></div><div><button type="button" disabled={busy} onClick={() => { void decideAll("reject"); }}>整组退回</button><button className="sn-primary" type="button" disabled={busy || !confirmable} title={confirmable ? undefined : "组内有尚未接入或离线的领域"} onClick={() => { void decideAll("approve"); }}>整组确认</button></div></header>
+    {error !== undefined && <p className="sn-error">{error}</p>}
+    <div className="sn-draft-list">{drafts.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={sourceTitle(draft)} target={domains.find((domain) => domain.id === draft.domain)} siblingCount={drafts.length} reload={reload} />)}</div>
+  </section>;
+}
+
 export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
   const pending = data.drafts.filter((draft) => draft.state === "pending");
   const settled = data.drafts.filter((draft) => draft.state !== "pending");
   const summaries = sessions.list.getSnapshot().byId;
-  const sourceTitle = (draft: CaptureDraft) => summaries[draft.sessionId as SessionId]?.displayTitle ?? draft.sessionId;
-  const siblingCount = (draft: CaptureDraft) => data.drafts.filter((item) => item.captureGroupId !== undefined && item.captureGroupId === draft.captureGroupId).length;
+  const sourceTitle = (draft: CaptureDraft) => draft.sessionId.startsWith("domain:health")
+    ? "Health Agent 草稿"
+    : draft.sessionId === "domain:ledger"
+      ? "Ledger Agent 草稿"
+      : summaries[draft.sessionId as SessionId]?.displayTitle ?? draft.sessionId;
+  const groups = [...pending.reduce((result, draft) => {
+    const key = draft.captureGroupId ?? draft.id;
+    result.set(key, [...(result.get(key) ?? []), draft]);
+    return result;
+  }, new Map<string, CaptureDraft[]>()).values()];
   return <div className="sn-page sn-review-page">
-    <header className="sn-page-header"><span>REVIEW / ALL SESSIONS</span><h1>待确认，不等于已写入。</h1><p>这里汇总所有来源会话的草稿；来源 Session 只用于审计和回溯，不再隐藏待处理工作。</p></header>
-    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，草稿会进入这个全局队列。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={sourceTitle(draft)} target={data.domains.find((domain) => domain.id === draft.domain)} siblingCount={siblingCount(draft)} reload={reload} />)}</div>}
+    <header className="sn-page-header"><span>REVIEW / CONTROL PLANE</span><h1>所有草稿，都先在这里确认。</h1><p>Nexus 汇总各会话 Proposal 和领域 Agent 草稿；数据仍归 Health、Ledger 所有，确认前不会成为正式事实。</p></header>
+    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，或等待领域 Agent 草稿同步到这里。</p></div> : groups.map((drafts) => drafts.length > 1
+      ? <DraftGroup key={drafts[0]?.captureGroupId ?? drafts[0]?.id} drafts={drafts} sourceTitle={sourceTitle} domains={data.domains} reload={reload} />
+      : drafts[0] === undefined ? null : <div className="sn-draft-list" key={drafts[0].id}><DraftCard draft={drafts[0]} sourceTitle={sourceTitle(drafts[0])} target={data.domains.find((domain) => domain.id === drafts[0]?.domain)} siblingCount={1} reload={reload} /></div>)}
     {settled.length > 0 && <section className="sn-history"><h2>全局已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? draft.domain === "health" || draft.domain === "ledger" ? `已写入 ${draft.domain === "health" ? "Health" : "Ledger"}` : "领域草稿已创建" : "已退回"}</em></p>)}</section>}
   </div>;
 }

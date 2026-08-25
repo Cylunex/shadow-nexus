@@ -37,6 +37,10 @@ export interface CaptureDraft {
   readonly state: DraftState;
   readonly risk: RiskLevel;
   readonly fields: Readonly<Record<string, string>>;
+  readonly origin?: "nexus" | "domain";
+  readonly domainDraftRef?: string;
+  readonly domainRevision?: number;
+  readonly attachmentRefs?: readonly string[];
   readonly receipt?: string;
 }
 
@@ -88,6 +92,7 @@ export interface CaptureRequest {
   readonly sessionId: string;
   readonly text: string;
   readonly analysis: CaptureAnalysis;
+  readonly attachmentIds?: readonly string[];
 }
 
 export interface CaptureAnalysisDraft {
@@ -107,6 +112,11 @@ export interface CaptureAnalysis {
 export interface ReviewRequest {
   readonly sessionId: string;
   readonly draftId: string;
+  readonly decision: "approve" | "reject";
+}
+
+export interface BatchReviewRequest {
+  readonly captureGroupId: string;
   readonly decision: "approve" | "reject";
 }
 

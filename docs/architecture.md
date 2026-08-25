@@ -46,22 +46,24 @@ apply to public hostnames or forwarded traffic.
 
 ## Capture path
 
-1. A user enters natural language in Nexus or the official Conversation.
-2. The original text is appended to the active DSH Session as a read-only structured-analysis request.
+1. A user enters natural language and/or uploads assets in Nexus Capture.
+2. Assets use the same Shadow Asset upload path as Ask; the original instruction and stable asset references are appended to the active DSH Session as a structured-analysis request.
 3. Nexus waits for that exact DSH turn to end and validates the marked JSON result; prompt admission is never treated as completion.
-4. The DSH result, rather than local keyword rules, decides the domain fan-out and fields shown in Review.
+4. The DSH result, rather than local keyword rules, decides the domain fan-out and fields shown in Review. A batch may contain up to 200 independent proposals and may repeat a domain.
 5. After explicit Review, a domain adapter validates and commits through the domain's own API.
 6. Nexus stores the canonical receipt and projects the result back into the UI.
 
-The capture-analysis prompt forbids tools and produces only the versioned Nexus result envelope. Health uses a two-call domain transaction after Review: create an auditable pending proposal, then commit that exact proposal through the hidden `health.records.write` boundary. The formal-write capability is not exposed to the DSH model.
+The capture-analysis prompt permits only read-only access to its uploaded asset paths and produces the versioned Nexus result envelope. It forbids every domain mutation. Health uses a two-call domain transaction after Review: create an auditable pending proposal, then commit that exact proposal through the hidden `health.records.write` boundary. The unified DSH Profile selects only L0 domain reads; draft and formal-write capabilities are not exposed to the model.
 
 ## Assistant path
 
 The persistent workbench bar separates two intents. **Ask** queues an ordinary, read-only Agent request into the displayed Session and opens the same official Conversation in the right dock. **Capture** preserves the original text and creates a reviewable structured draft. Domain pages may call the same Ask action with visible page context; Health uses it for the initial 30-day weight discussion. Asking never implies permission to create or mutate domain facts.
 
-Ask treats images and ordinary files identically. The Host performs the Shadow Asset three-step upload, retains the short-lived Upload Token only in memory, and exposes a read-only local view inside the DSH Session sandbox. The queued prompt contains the stable `shadow://nexus/...` reference and local read path; Shadow Asset remains authoritative, and DSH native attachment storage is not used by Nexus.
+Ask and Capture treat images and ordinary files identically. The Host performs the Shadow Asset three-step upload, retains the short-lived Upload Token only in memory, and exposes a read-only local view inside the DSH Session sandbox. The queued prompt contains the stable `shadow://nexus/...` reference and local read path; Shadow Asset remains authoritative, and DSH native attachment storage is not used by Nexus.
 
-Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work. Health and Ledger Review confirmations are final: Nexus first creates an auditable domain draft, then commits that exact draft through a model-hidden write boundary. The resulting receipt points at canonical domain data and does not require a second confirmation in the domain UI.
+Review is a global control plane rather than a Session inbox or a second domain database. Every Nexus Proposal retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work. Pending drafts created by the same Health or Ledger Agent are discovered through model-hidden endpoints and imported as reference-backed review items; their fields, revision, source and domain URI are cached, while ownership remains in the domain. Confirmation commits the existing domain draft instead of creating a duplicate, and rejection propagates to the existing draft.
+
+Capture groups and federated domain queues can be reviewed individually or in a batch. A batch is processed deterministically and Nexus persists each completed item before moving to the next, so an upstream failure exposes partial progress instead of replaying successful writes. Health rejection and Ledger rejection are idempotent; Ledger deletion and rejection audit share one transaction.
 
 ## Confirmation levels
 

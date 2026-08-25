@@ -70,13 +70,21 @@ test("uses completed DSH analysis as the capture routing authority", () => {
   assert.equal(drafts[0].captureGroupId, "draft_capture_12345678-abcd");
 });
 
-test("rejects malformed or duplicate DSH analysis", () => {
+test("accepts repeated domains for batch capture and rejects oversized DSH analysis", () => {
   const item = { domain: "health", intent: "health.record", summary: "午餐", risk: "medium", fields: { recordType: "meal" } };
-  assert.throws(() => createAnalyzedDrafts("session-a", "午餐", {
+  const drafts = createAnalyzedDrafts("session-a", "两顿午餐", {
     version: 1,
     captureId: "capture_12345678-abcd",
     drafts: [item, item]
-  }), /重复/u);
+  }, new Date("2026-08-25T08:00:00Z"), ["shadow://assets/receipt"]);
+  assert.equal(drafts.length, 2);
+  assert.equal(new Set(drafts.map((draft) => draft.id)).size, 2);
+  assert.deepEqual(drafts[0].attachmentRefs, ["shadow://assets/receipt"]);
+  assert.throws(() => createAnalyzedDrafts("session-a", "批量", {
+    version: 1,
+    captureId: "capture_12345678-abcd",
+    drafts: Array.from({ length: 201 }, () => item)
+  }), /没有返回/u);
 });
 
 test("migrates a pending legacy Archive draft into deterministic domain drafts", () => {
