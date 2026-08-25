@@ -48,7 +48,17 @@ async function fixtureServer() {
       bodies.push(body);
       assert.equal(body.money_type, "expense");
       response.statusCode = 201;
-      response.end(JSON.stringify({ record_ref: "shadow://ledger/records/record-test" }));
+      response.end(JSON.stringify({ record_ref: "shadow://ledger/records/11111111-1111-4111-8111-111111111111", revision: 1 }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts/11111111-1111-4111-8111-111111111111/commit") {
+      bodies.push(await jsonBody(request));
+      response.end(JSON.stringify({ record_ref: "shadow://ledger/records/11111111-1111-4111-8111-111111111111", state: "confirmed", revision: 2 }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/api/machine/v1/agent/drafts/22222222-2222-4222-8222-222222222222/commit") {
+      bodies.push(await jsonBody(request));
+      response.end(JSON.stringify({ record_ref: "shadow://ledger/records/22222222-2222-4222-8222-222222222222", state: "confirmed", revision: 2, replayed: false }));
       return;
     }
     response.statusCode = 404;
@@ -85,9 +95,10 @@ test("projects Health and Ledger summaries and creates reversible domain drafts"
   const health = createDraft("session-a", "今天体重 68.4kg，睡眠 7.5 小时", new Date("2026-08-23T08:00:00Z"));
   const ledger = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
   assert.equal(await gateway.createDraft(health), "shadow://health/diet/42");
-  assert.equal(await gateway.createDraft(ledger), "shadow://ledger/records/record-test");
+  assert.equal(await gateway.createDraft(ledger), "shadow://ledger/records/11111111-1111-4111-8111-111111111111");
   assert.ok(fixture.calls.every((call) => call.authorization?.startsWith("Bearer ")));
-  assert.equal(fixture.calls.at(-1)?.idempotency, ledger.id);
+  assert.equal(fixture.calls.at(-2)?.idempotency, ledger.id);
+  assert.deepEqual(fixture.bodies.at(-1), { revision: 1 });
 });
 
 test("sends confirmed meal nutrition and actual payment to separate domain drafts", async (context) => {
@@ -130,6 +141,25 @@ test("reconciles an already confirmed legacy Health proposal into canonical data
     receipt: "shadow://health/drafts/hd_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   };
   assert.equal(await gateway.reconcileConfirmedDraft(approved), "shadow://health/diet/43");
+});
+
+test("reconciles an approved legacy Ledger proposal into a confirmed record", async (context) => {
+  const fixture = await fixtureServer();
+  context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
+  process.env.SHADOW_LEDGER_BASE_URL = fixture.baseUrl;
+  process.env.SHADOW_LEDGER_AGENT_TOKEN = "ledger-test-token";
+  const gateway = new HttpDomainGateway(1_000);
+  const pending = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
+  const approved = {
+    ...pending,
+    state: "approved",
+    receipt: "shadow://ledger/records/22222222-2222-4222-8222-222222222222"
+  };
+  assert.equal(
+    await gateway.reconcileConfirmedDraft(approved),
+    "shadow://ledger/records/22222222-2222-4222-8222-222222222222"
+  );
+  assert.deepEqual(fixture.bodies.at(-1), { revision: 1 });
 });
 
 test("keeps unsupported Health captures out of the domain API", async (context) => {

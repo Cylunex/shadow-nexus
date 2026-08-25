@@ -186,13 +186,13 @@ function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
     <h3>{draft.summary}</h3>
     <div className="sn-draft-target" data-ready={connectedTarget}>
       <DomainMark domain={draft.domain} />
-      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.domain === "health" ? "你在这里确认后，Nexus 会先创建可审计的 Health 草稿，再立即写成正式健康记录；无需到 Health 二次确认。" : "确认后只提交下面的金额字段与标题，原文继续留在 Nexus；Ledger 保留自己的草稿状态。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
+      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.domain === "health" ? "你在这里确认后，Nexus 会先创建可审计的 Health 草稿，再立即写成正式健康记录；无需到 Health 二次确认。" : "你在这里确认后，Nexus 会先创建可审计的 Ledger 草稿，再提交同一条记录正式入账；原文继续留在 Nexus。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
     </div>
     {siblingCount > 1 && <p className="sn-draft-group">同一次记录已拆成 {siblingCount} 张领域草稿，请分别核对和确认。</p>}
     <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{displayFieldValue(key, value)}</dd></div>)}</dl></section>
     <details className="sn-draft-source"><summary>查看完整原文 <span>{draft.text.length} 字 · 可拖动右下角放大</span></summary><pre>{draft.text}</pre></details>
     {error !== undefined && <p className="sn-error">{error}</p>}
-    <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未接入"} onClick={() => { void decide("approve"); }}>{connectedTarget ? draft.domain === "health" ? "确认并写入 Health" : `提交 ${targetLabel} 草稿` : "暂不可提交"}</button></footer>
+    <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未接入"} onClick={() => { void decide("approve"); }}>{connectedTarget ? draft.domain === "health" || draft.domain === "ledger" ? `确认并写入 ${targetLabel}` : `提交 ${targetLabel} 草稿` : "暂不可提交"}</button></footer>
   </article>;
 }
 
@@ -205,7 +205,7 @@ export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
   return <div className="sn-page sn-review-page">
     <header className="sn-page-header"><span>REVIEW / ALL SESSIONS</span><h1>待确认，不等于已写入。</h1><p>这里汇总所有来源会话的草稿；来源 Session 只用于审计和回溯，不再隐藏待处理工作。</p></header>
     {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，草稿会进入这个全局队列。</p></div> : <div className="sn-draft-list">{pending.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={sourceTitle(draft)} target={data.domains.find((domain) => domain.id === draft.domain)} siblingCount={siblingCount(draft)} reload={reload} />)}</div>}
-    {settled.length > 0 && <section className="sn-history"><h2>全局已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? draft.domain === "health" ? "已写入 Health" : "领域草稿已创建" : "已退回"}</em></p>)}</section>}
+    {settled.length > 0 && <section className="sn-history"><h2>全局已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? draft.domain === "health" || draft.domain === "ledger" ? `已写入 ${draft.domain === "health" ? "Health" : "Ledger"}` : "领域草稿已创建" : "已退回"}</em></p>)}</section>}
   </div>;
 }
 

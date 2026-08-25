@@ -61,7 +61,7 @@ The persistent workbench bar separates two intents. **Ask** queues an ordinary, 
 
 Ask treats images and ordinary files identically. The Host performs the Shadow Asset three-step upload, retains the short-lived Upload Token only in memory, and exposes a read-only local view inside the DSH Session sandbox. The queued prompt contains the stable `shadow://nexus/...` reference and local read path; Shadow Asset remains authoritative, and DSH native attachment storage is not used by Nexus.
 
-Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work. A Health Review confirmation is final: the resulting receipt points at canonical Health data and does not require a second confirmation in the Health UI. Ledger keeps its own domain-draft lifecycle.
+Review is a global workflow queue rather than a Session inbox. Every draft retains its source `sessionId` for audit and navigation, but switching the workbench Session does not hide pending work. Health and Ledger Review confirmations are final: Nexus first creates an auditable domain draft, then commits that exact draft through a model-hidden write boundary. The resulting receipt points at canonical domain data and does not require a second confirmation in the domain UI.
 
 ## Confirmation levels
 

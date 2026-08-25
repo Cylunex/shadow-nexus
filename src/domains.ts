@@ -46,6 +46,12 @@ interface HealthCommitReceipt {
 
 interface LedgerDraftReceipt {
   readonly record_ref: string;
+  readonly revision: number;
+}
+
+interface LedgerCommitReceipt {
+  readonly record_ref: string;
+  readonly state: "confirmed";
 }
 
 export class DomainGatewayError extends Error {
@@ -283,27 +289,49 @@ export class HttpDomainGateway implements DomainGateway {
     }
     if (draft.domain === "ledger") {
       if (this.ledger === undefined) throw new DomainGatewayError(503, "Ledger 尚未连接。");
-      const result = await requestJson<LedgerDraftReceipt>(this.ledger, "/api/machine/v1/agent/drafts", this.timeoutMs, {
+      const draftResult = await requestJson<LedgerDraftReceipt>(this.ledger, "/api/machine/v1/agent/drafts", this.timeoutMs, {
         method: "POST",
         headers: { "content-type": "application/json", "idempotency-key": draft.id },
         body: JSON.stringify(ledgerPayload(draft))
       });
-      return result.record_ref;
+      const recordId = draftResult.record_ref.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u)?.[1];
+      if (recordId === undefined) throw new DomainGatewayError(502, "Ledger 返回了无效的草稿引用。");
+      const commitResult = await requestJson<LedgerCommitReceipt>(
+        this.ledger,
+        `/api/machine/v1/agent/drafts/${encodeURIComponent(recordId)}/commit`,
+        this.timeoutMs,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: draftResult.revision }) }
+      );
+      return commitResult.record_ref;
     }
     throw new DomainGatewayError(503, "这个领域尚未接入 Nexus 写入适配器。");
   }
 
   async reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined> {
-    if (draft.state !== "approved" || draft.domain !== "health" || this.health === undefined) return undefined;
-    const match = draft.receipt?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u);
-    if (match?.[1] === undefined) return undefined;
-    const result = await requestJson<HealthCommitReceipt>(
-      this.health,
-      `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(match[1])}/commit`,
-      this.timeoutMs,
-      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
-    );
-    return result.resource_uri;
+    if (draft.state !== "approved") return undefined;
+    if (draft.domain === "health" && this.health !== undefined) {
+      const match = draft.receipt?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u);
+      if (match?.[1] === undefined) return undefined;
+      const result = await requestJson<HealthCommitReceipt>(
+        this.health,
+        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(match[1])}/commit`,
+        this.timeoutMs,
+        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
+      );
+      return result.resource_uri;
+    }
+    if (draft.domain === "ledger" && this.ledger !== undefined) {
+      const match = draft.receipt?.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u);
+      if (match?.[1] === undefined) return undefined;
+      const result = await requestJson<LedgerCommitReceipt>(
+        this.ledger,
+        `/api/machine/v1/agent/drafts/${encodeURIComponent(match[1])}/commit`,
+        this.timeoutMs,
+        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: 1 }) }
+      );
+      return result.record_ref;
+    }
+    return undefined;
   }
 }
 
