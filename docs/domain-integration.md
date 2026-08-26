@@ -36,7 +36,8 @@ Nexus 只从 `SHADOW_NEXUS_RUNTIME_FILE` 加载经过 Platform 编译的投影�
 - `summary`：只读卡片，使用声明式 JSON Pointer 取展示值；
 - `capture`：把 DSH 产出的结构化 Proposal 发送到领域 Draft；
 - `review`：发现、确认或拒绝领域拥有的待审核对象；
-- `search`、`run-status`、`resource-link`、`app-link`：作为动态模块或资源入口；
+- `search`：声明 `collection_pointer` 和 `item_title_pointer`，可选声明结果摘要及稳定引用指针，由 Nexus 联合检索；
+- `run-status`、`resource-link`、`app-link`：作为动态模块或资源入口；
 - `shadow.review.v1`：跨领域审核协议。
 
 Surface 只描述数据投影，不允许加载远程 JavaScript。需要定制交互时，领域提供受信任的 DSH

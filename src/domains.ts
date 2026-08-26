@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { CaptureDraft, DomainId, DomainSummary, RiskLevel, TodaySignal } from "./contracts.js";
+import type { CaptureDraft, DomainId, DomainSummary, NexusSearchResult, RiskLevel, TodaySignal } from "./contracts.js";
 import type { BootstrapProjection } from "./projection.js";
 
 export interface RuntimeOperation {
@@ -27,6 +27,9 @@ export interface RuntimeSurface {
     readonly metric_pointer?: string;
     readonly detail_pointer?: string;
     readonly collection_pointer?: string;
+    readonly item_title_pointer?: string;
+    readonly item_detail_pointer?: string;
+    readonly item_reference_pointer?: string;
     readonly unit?: string;
   };
   readonly operation?: RuntimeOperation;
@@ -66,6 +69,10 @@ export interface RuntimeDomain {
   readonly surfaces: readonly RuntimeSurface[];
   readonly review: RuntimeReview | null;
   readonly app_id?: string;
+  readonly app?: {
+    readonly canonical_url: string;
+    readonly aliases: readonly string[];
+  } | null;
 }
 
 export interface NexusRuntime {
@@ -108,6 +115,7 @@ export interface DomainGateway {
   readonly runtime: NexusRuntime;
   project(now?: Date): Promise<BootstrapProjection>;
   discoverDrafts(): Promise<readonly CaptureDraft[]>;
+  search(query: string, limit?: number): Promise<NexusSearchResult>;
   createDraft(draft: CaptureDraft, actor?: string): Promise<string>;
   rejectDraft(draft: CaptureDraft): Promise<void>;
   reconcileConfirmedDraft(draft: CaptureDraft, actor?: string): Promise<string | undefined>;
@@ -132,6 +140,13 @@ function runtimeString(value: unknown, label: string): string {
   return value;
 }
 
+function runtimeHttpsUrl(value: unknown, label: string): void {
+  const raw = runtimeString(value, label);
+  try {
+    if (new URL(raw).protocol !== "https:") throw new Error();
+  } catch { throw new DomainGatewayError(500, `${label} 无效。`); }
+}
+
 export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_FILE")): NexusRuntime {
   if (path === undefined) return emptyRuntime;
   let parsed: unknown;
@@ -151,6 +166,11 @@ export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_F
     runtimeString(domain.plugin_id, "plugin id");
     if (!Array.isArray(domain.surfaces) || typeof domain.presentation !== "object" || domain.presentation === null) {
       throw new DomainGatewayError(500, "Nexus 领域投影无效。");
+    }
+    if (domain.app !== undefined && domain.app !== null) {
+      if (typeof domain.app !== "object" || !Array.isArray(domain.app.aliases)) throw new DomainGatewayError(500, "Nexus 应用入口无效。");
+      runtimeHttpsUrl(domain.app.canonical_url, "canonical app URL");
+      for (const alias of domain.app.aliases) runtimeHttpsUrl(alias, "app alias URL");
     }
     ids.add(domain.id);
   }
@@ -367,6 +387,7 @@ export class HttpDomainGateway implements DomainGateway {
       const summarySurface = domain.surfaces.find((surface) => surface.type === "summary");
       const reviewSurface = domain.surfaces.find((surface) => surface.type === "review");
       const captureSurface = domain.surfaces.find((surface) => surface.type === "capture");
+      const searchSurface = domain.surfaces.find((surface) => surface.type === "search");
       const base: DomainSummary = {
         id: domain.id,
         label: domain.presentation.title,
@@ -378,6 +399,8 @@ export class HttpDomainGateway implements DomainGateway {
         metric: connection === undefined ? "尚未配置" : "连接异常",
         detail: connection === undefined ? "缺少运行时连接配置" : "领域服务暂时不可用",
         captureEnabled: captureSurface !== undefined,
+        searchEnabled: searchSurface?.operation !== undefined,
+        ...(domain.app?.canonical_url === undefined ? {} : { appUrl: domain.app.canonical_url }),
         ...(reviewSurface === undefined ? {} : { reviewRisk: riskLevel(reviewSurface.risk_level) }),
         intentPrefixes: captureSurface?.intent_prefixes ?? []
       };
@@ -418,6 +441,48 @@ export class HttpDomainGateway implements DomainGateway {
       } catch { return []; }
     }));
     return discovered.flat().sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async search(query: string, limit = 20): Promise<NexusSearchResult> {
+    const normalized = query.trim();
+    if (normalized === "" || normalized.length > 200) throw new DomainGatewayError(422, "搜索内容无效。");
+    const boundedLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+    const results = await Promise.all(this.runtime.domains.map(async (domain) => {
+      const surface = domain.surfaces.find((item) => item.type === "search" && item.operation !== undefined);
+      if (surface?.operation === undefined) return undefined;
+      const connection = domainConnection(domain);
+      if (connection === undefined) return { domain: domain.id, available: false, items: [] } as const;
+      try {
+        const response = await requestJson<unknown>(connection, surface.operation, this.timeoutMs, {
+          body: { query: normalized, limit: boundedLimit }
+        });
+        const collection = pointer(response, surface.display?.collection_pointer);
+        if (!Array.isArray(collection)) throw new DomainGatewayError(502, "领域搜索响应无效。");
+        const items = collection.slice(0, boundedLimit).flatMap((item) => {
+          const title = displayValue(pointer(item, surface.display?.item_title_pointer));
+          if (title === undefined) return [];
+          const detail = displayValue(pointer(item, surface.display?.item_detail_pointer)) ?? "";
+          const reference = displayValue(pointer(item, surface.display?.item_reference_pointer));
+          return [{
+            domain: domain.id,
+            domainLabel: domain.presentation.title,
+            title,
+            detail,
+            ...(reference === undefined ? {} : { reference })
+          }];
+        });
+        return { domain: domain.id, available: true, items } as const;
+      } catch {
+        return { domain: domain.id, available: false, items: [] } as const;
+      }
+    }));
+    const attempted = results.filter((result) => result !== undefined);
+    return {
+      query: normalized,
+      items: attempted.flatMap((result) => result.items).slice(0, boundedLimit),
+      searchedDomains: attempted.filter((result) => result.available).map((result) => result.domain),
+      unavailableDomains: attempted.filter((result) => !result.available).map((result) => result.domain)
+    };
   }
 
   async createDraft(draft: CaptureDraft, actor?: string): Promise<string> {

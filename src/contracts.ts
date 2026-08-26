@@ -17,8 +17,25 @@ export interface DomainSummary {
   readonly color: string;
   readonly order: number;
   readonly captureEnabled: boolean;
+  readonly searchEnabled: boolean;
+  readonly appUrl?: string;
   readonly reviewRisk?: RiskLevel;
   readonly intentPrefixes: readonly string[];
+}
+
+export interface NexusSearchItem {
+  readonly domain: DomainId;
+  readonly domainLabel: string;
+  readonly title: string;
+  readonly detail: string;
+  readonly reference?: string;
+}
+
+export interface NexusSearchResult {
+  readonly query: string;
+  readonly items: readonly NexusSearchItem[];
+  readonly searchedDomains: readonly DomainId[];
+  readonly unavailableDomains: readonly DomainId[];
 }
 
 export interface TodaySignal {

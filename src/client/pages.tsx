@@ -1,6 +1,6 @@
 import type { SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { useState } from "react";
-import type { CaptureDraft, DomainId, DomainSummary, TodaySignal } from "../contracts.js";
+import type { CaptureDraft, DomainId, DomainSummary, NexusSearchResult, TodaySignal } from "../contracts.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusModuleDescriptor, NexusPageProps } from "./contracts.js";
 
@@ -174,6 +174,41 @@ export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
   </div>;
 }
 
+export function SearchPage({ data }: NexusPageProps) {
+  const [query, setQuery] = useState("");
+  const [result, setResult] = useState<NexusSearchResult>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const searchable = data.domains.filter((domain) => domain.searchEnabled);
+  async function search() {
+    if (query.trim() === "") return;
+    setBusy(true);
+    try {
+      const next = await nexusJson<NexusSearchResult>(await fetch(nexusEndpoint("search"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ query: query.trim(), limit: 30 })
+      }));
+      setResult(next);
+      setError(undefined);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "搜索暂时不可用。");
+    } finally { setBusy(false); }
+  }
+  return <div className="sn-page sn-search-page">
+    <header className="sn-page-header"><span>SEARCH / FEDERATED</span><h1>跨领域查找，事实仍留在原处。</h1><p>当前可搜索：{searchable.map((domain) => domain.label).join("、") || "尚无领域"}。Nexus 只返回摘要和稳定资源引用。</p></header>
+    <form className="sn-search-box" onSubmit={(event) => { event.preventDefault(); void search(); }}><input value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)} placeholder="搜索资料、证据和长期记忆" /><button className="sn-primary" type="submit" disabled={busy || query.trim() === ""}>{busy ? "搜索中…" : "搜索"}</button></form>
+    {error !== undefined && <p className="sn-error">{error}</p>}
+    {result !== undefined && <section className="sn-search-results"><div className="sn-section-title"><div><span>结果</span><h2>{result.items.length} 条匹配</h2></div><small>{result.unavailableDomains.length > 0 ? `${result.unavailableDomains.length} 个领域暂不可用` : "所有可搜索领域已响应"}</small></div>{result.items.length === 0 ? <div className="sn-empty sn-empty-compact"><h2>没有找到匹配内容</h2></div> : result.items.map((item, index) => <article key={`${item.domain}:${item.reference ?? String(index)}`}><DomainMark domain={item.domain} /><div><span>{item.domainLabel}</span><h3>{item.title}</h3><p>{item.detail}</p>{item.reference !== undefined && <code>{item.reference}</code>}</div></article>)}</section>}
+  </div>;
+}
+
+export function AppsPage({ data, navigate }: NexusPageProps) {
+  return <div className="sn-page sn-apps-page"><header className="sn-page-header"><span>APPS / DOMAIN OWNERS</span><h1>进入领域完整应用。</h1><p>Nexus 负责汇总和编排；完整编辑、设置与长期事实仍由各领域应用拥有，不在这里原生重写。</p></header><div className="sn-apps-grid">{data.domains.map((domain) => domain.appUrl === undefined
+    ? <button type="button" key={domain.id} onClick={() => navigate(domain.id)}><DomainMark domain={domain.id} /><div><h2>{domain.label}</h2><p>{domain.caption}</p><span>查看 Nexus 摘要</span></div><em>查看</em></button>
+    : <a key={domain.id} href={domain.appUrl} target="_blank" rel="noreferrer"><DomainMark domain={domain.id} /><div><h2>{domain.label}</h2><p>{domain.caption}</p><span>{domain.status === "ready" ? "领域已连接" : "打开独立应用"}</span></div><em>打开 ↗</em></a>)}</div></div>;
+}
+
 function DomainPage({ data, showConversation, ask, domainId }: NexusPageProps & { readonly domainId: DomainId }) {
   const domain = data.domains.find((item) => item.id === domainId);
   const [asking, setAsking] = useState(false);
@@ -203,7 +238,9 @@ function DomainPage({ data, showConversation, ask, domainId }: NexusPageProps & 
 export function builtinNexusModules(): readonly NexusModuleDescriptor[] {
   return [
     { id: "nexus:today", apiVersion: 1, title: "现在", route: "today", icon: "◫", group: "home", order: 0, scope: "root", page: TodayPage },
-    { id: "nexus:review", apiVersion: 1, title: "待我处理", route: "review", icon: "◇", group: "home", order: 20, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined }
+    { id: "nexus:search", apiVersion: 1, title: "搜索", route: "search", icon: "⌕", group: "home", order: 10, scope: "root", page: SearchPage, available: ({ data }) => data.domains.some((domain) => domain.searchEnabled) },
+    { id: "nexus:review", apiVersion: 1, title: "待我处理", route: "review", icon: "◇", group: "home", order: 20, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined },
+    { id: "nexus:apps", apiVersion: 1, title: "应用", route: "apps", icon: "▦", group: "home", order: 30, scope: "root", page: AppsPage }
   ];
 }
 

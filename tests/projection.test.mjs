@@ -63,7 +63,7 @@ test("preserves legacy drafts without silently reclassifying their domain", () =
 test("bootstrap projects only compiled domains", () => {
   const domain = {
     id: "alpha", label: "Alpha", caption: "Alpha facts", status: "ready", metric: "7", detail: "ready",
-    icon: "alpha", color: "#112233", order: 10, captureEnabled: true, reviewRisk: "medium", intentPrefixes: ["alpha.record"]
+    icon: "alpha", color: "#112233", order: 10, captureEnabled: true, searchEnabled: false, appUrl: "https://alpha.example.test/", reviewRisk: "medium", intentPrefixes: ["alpha.record"]
   };
   const bootstrap = createBootstrap("session-a", [proposal()], new Date("2026-08-26T08:00:00Z"), { mode: "connected", domains: [domain], signals: [] }, true);
   assert.equal(bootstrap.protocol, "shadow.nexus.v1");

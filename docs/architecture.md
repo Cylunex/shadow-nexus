@@ -31,7 +31,7 @@ The stock `web` profile must remain available without the Nexus bundle. Root own
 
 The query parameters `surface` and `view` are the durable browser navigation state. Nexus defaults to `surface=nexus` and `view=today`; browser back/forward and refresh preserve explicit selections. DSH remains the sole owner of current Session selection. The workbench currently follows that selection explicitly and labels the policy instead of silently borrowing the last Session.
 
-Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Now, Review, and the initial domain pages use the same versioned registration contract as external client plugins. Registrations have namespaced IDs, unique routes, deterministic ordering, availability and badge hooks, and effect-scoped disposal. A removed active module falls back to Now.
+Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Now, Search, Review, Apps, and projected domain pages use the same versioned registration contract as external client plugins. Search fans out only to declared Search Surfaces and renders their generic item projection; Apps opens the Catalog-projected domain application and does not duplicate its full UI as a native Nexus page. Registrations have namespaced IDs, unique routes, deterministic ordering, availability and badge hooks, and effect-scoped disposal. A removed active module falls back to Now.
 
 Installed domain UI code must enter through a trusted DSH Client plugin. A domain manifest may describe a Surface but never names remotely executed JavaScript.
 

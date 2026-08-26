@@ -163,6 +163,14 @@ export async function handleNexusRequest(
       send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], new Date(), projection, assets.configured));
       return;
     }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/search") {
+      const input = await readJson(request);
+      if (typeof input.query !== "string") throw new RequestError(400, "缺少搜索内容。");
+      const limit = input.limit === undefined ? 20 : Number(input.limit);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new RequestError(400, "搜索数量无效。");
+      send(response, 200, await domains.search(input.query, limit));
+      return;
+    }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/assets/init") {
       const input = await readJson(request) as Partial<NexusAssetUploadInit>;
       if (typeof input.sessionId !== "string" || typeof input.filename !== "string" || typeof input.contentType !== "string" || typeof input.sizeBytes !== "number") {

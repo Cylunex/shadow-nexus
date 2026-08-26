@@ -40,11 +40,13 @@ function runtime() {
       connection: { base_url_env: "ALPHA_URL", credential_env: "ALPHA_TOKEN", context_env: {} },
       surfaces: [
         { id: "today", type: "summary", operation_id: "alpha_summary", operation: operation("alpha_summary", "GET", "/alpha/summary", "alpha.summary.read"), display: { metric_pointer: "/metric", detail_pointer: "/detail" } },
+        { id: "search", type: "search", operation_id: "search_alpha", operation: operation("search_alpha", "POST", "/alpha/search", "alpha.records.search"), display: { collection_pointer: "/items", item_title_pointer: "/title", item_detail_pointer: "/summary", item_reference_pointer: "/resource_uri" } },
         { id: "capture", type: "capture", operation_id: "create_alpha_review", operation: create, risk_level: "L2", intent_prefixes: ["alpha.record"] },
         { id: "review", type: "review", risk_level: "L2", intent_prefixes: ["alpha.record"] }
       ],
       review: { protocol: "shadow.review.v1", mode: "commit", operations: { list, create, commit, reject } },
-      app_id: "alpha"
+      app_id: "alpha",
+      app: { canonical_url: "https://alpha.example.test/", aliases: [] }
     }, {
       id: "beta",
       product_id: "shadow-beta",
@@ -73,6 +75,7 @@ async function fixtureServer() {
     calls.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records" }));
+    if (request.method === "POST" && request.url === "/alpha/search") return response.end(JSON.stringify({ items: [{ title: `Found ${body.query}`, summary: "Search detail", resource_uri: "shadow://alpha/records/1" }] }));
     if (request.method === "GET" && request.url === "/alpha/reviews") return response.end(JSON.stringify({ protocol: "shadow.review.v1", items: [{
       protocol: "shadow.review.v1", review_id: "existing", reference: "shadow://alpha/reviews/existing", revision: 3,
       domain: "alpha", intent: "alpha.record", summary: "Existing proposal", fields: { value: 1 }, risk_level: "L2",
@@ -129,6 +132,19 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
   assert.deepEqual(projection.domains.map((item) => item.id), ["alpha", "beta"]);
   assert.equal(projection.domains[0].metric, "7");
   assert.equal(projection.domains[0].intentPrefixes[0], "alpha.record");
+  assert.equal(projection.domains[0].searchEnabled, true);
+  assert.equal(projection.domains[0].appUrl, "https://alpha.example.test/");
+
+  const search = await gateway.search("needle", 10);
+  assert.deepEqual(search.searchedDomains, ["alpha"]);
+  assert.deepEqual(search.unavailableDomains, []);
+  assert.deepEqual(search.items, [{
+    domain: "alpha",
+    domainLabel: "Alpha",
+    title: "Found needle",
+    detail: "Search detail",
+    reference: "shadow://alpha/records/1"
+  }]);
 
   const discovered = await gateway.discoverDrafts();
   assert.equal(discovered[0].domainReviewId, "existing");
