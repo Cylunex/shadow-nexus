@@ -1,5 +1,5 @@
 import { type ISessions, type SessionId } from "@deepseek-ai/dsh-client-runtime/client";
-import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { CaptureDraft, NexusAssetAttachment, NexusBootstrap, NexusInteractionResult } from "../contracts.js";
 import { askNexus, type InteractionPhase, submitNexus, uploadNexusAsset } from "./assistant.js";
 import { useNexusBootstrap } from "./api.js";
@@ -7,7 +7,7 @@ import type { NexusAskContext, NexusModuleContext, NexusModuleGroup, NexusModule
 import type { NexusLayoutState } from "./layout-state.js";
 import { NexusModuleBoundary } from "./module-boundary.js";
 import type { NexusNavigationStore } from "./navigation.js";
-import { DraftCard } from "./pages.js";
+import { DraftCard, projectedNexusModules } from "./pages.js";
 
 const groupLabels: Record<NexusModuleGroup, string> = {
   home: "工作台",
@@ -238,7 +238,7 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
         <button type="button" aria-label={`移除 ${attachment.file.name || "附件"}`} disabled={busy} onClick={() => removeAttachment(attachment.key)}>×</button>
       </article>)}
     </div>}
-    <small>Shadow 先理解再行动；任何 Health/Ledger 写入都会原地展示 Proposal。用 /ask 强制只聊，用 /record 强制记录。</small>
+    <small>Shadow 先理解再行动；任何领域变更都会先展示 Proposal。用 /ask 强制只聊，用 /record 强制记录。</small>
     {error !== undefined && <p>{error}</p>}
   </section>;
 }
@@ -248,11 +248,12 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
   const subscribeModules = useCallback((listener: () => void) => modules.subscribe(listener), [modules]);
   const readModules = useCallback(() => modules.getSnapshot(), [modules]);
   const registered = useSyncExternalStore(subscribeModules, readModules, readModules);
+  const projected = useMemo(() => projectedNexusModules(data.domains), [data.domains]);
   const subscribeNavigation = useCallback((listener: () => void) => navigation.subscribe(listener), [navigation]);
   const readNavigation = useCallback(() => navigation.getSnapshot(), [navigation]);
   const location = useSyncExternalStore(subscribeNavigation, readNavigation, readNavigation);
   const context: NexusModuleContext = { sessionId, data };
-  const available = registered.filter((module) => module.scope === "root" || sessionId !== undefined)
+  const available = [...registered, ...projected].filter((module) => module.scope === "root" || sessionId !== undefined)
     .filter((module) => module.available?.(context) !== false);
   const active = available.find((module) => module.route === location.route) ?? available.find((module) => module.route === "today") ?? available[0];
 
@@ -269,10 +270,10 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
   }, [active?.route, layout, sessionId, sessions]);
   const submitInteraction = useCallback(async (text: string, attachments: readonly NexusAssetAttachment[], onPhase: (phase: InteractionPhase) => void) => {
     if (sessionId === undefined) throw new Error("请先选择一个工作台会话。");
-    const result = await submitNexus(sessions, sessionId, text, attachments, onPhase, { module: active?.route ?? "today" });
+    const result = await submitNexus(sessions, sessionId, text, attachments, onPhase, { module: active?.route ?? "today" }, data.domains);
     if (result.drafts.length > 0) await reload();
     return result;
-  }, [active?.route, reload, sessionId, sessions]);
+  }, [active?.route, data.domains, reload, sessionId, sessions]);
   const recentSessions = sessionOptions.map((session) => ({ ...session, current: session.id === sessionId }));
   const continueSession = useCallback((targetSessionId: string) => {
     sessions.open(targetSessionId as SessionId);

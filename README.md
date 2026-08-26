@@ -2,7 +2,7 @@
 
 Shadow Nexus is the root Web shell for the Shadow profile on DeepSeek Harness. It owns the page, navigation, and domain workbench while keeping the official DSH Conversation as a dockable or full-screen Agent surface backed by the same Session.
 
-The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, one intent-aware Composer, unified Shadow Asset attachments, inline Proposal review, dock/full Conversation layouts, lightweight recent-Session continuation, URL-backed navigation, a client module registry, and a federated global review queue. The Composer waits for the completed DSH response, returns ordinary discussion directly, and only creates reviewable Proposals when the user intends to save facts. A single interaction can fan out to as many as 200 independent Proposals, including multiple items in one domain. Nexus semantically links matching Nexus and Health/Ledger Agent drafts, preserves the domain reference and revision as the confirmation source of truth, and does not reopen an already confirmed fact. The DSH model has read capabilities only; all domain writes remain behind model-hidden Host boundaries.
+The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, one intent-aware Composer, unified Shadow Asset attachments, inline Proposal review, dock/full Conversation layouts, lightweight recent-Session continuation, URL-backed navigation, a client module registry, and a federated global review queue. Platform compiles the installed domains, connections and Surfaces into `shadow-nexus-runtime.json`; Nexus contains no built-in domain list, endpoint table or keyword router. The Composer waits for the completed DSH response, returns ordinary discussion directly, and only creates reviewable Proposals when the user intends to save facts. A single interaction can fan out to as many as 200 independent Proposals, including multiple items in one domain. The DSH model has read capabilities only; all domain writes remain behind model-hidden Host boundaries and the domain-owned `shadow.review.v1` protocol.
 
 The bundle disables the official `ui-layout` row and replaces it with the Nexus root. The official Conversation, tool, permission, attachment, workflow, and other feature plugins remain unchanged and render through the child slots owned by Nexus. Install this bundle in a dedicated `shadow` profile; retain the stock `web` profile as the recovery and upgrade-diagnostic surface.
 
@@ -33,3 +33,10 @@ SHADOW_NEXUS_ASSET_VIEW_ROOT=/workspace/.shadow-nexus/assets
 ```
 
 The base URL must use HTTPS, except for a loopback HTTP endpoint. The token file is read server-side on demand. `SHADOW_NEXUS_ASSET_VIEW_ROOT` must be readable from the DSH Session sandbox; the directory contains a cache/read view, while Shadow Asset remains the source of truth.
+
+## Compiled runtime
+
+Set `SHADOW_NEXUS_RUNTIME_FILE` to the immutable Nexus projection produced by Shadow Platform. L3/L4
+confirmation additionally requires `SHADOW_CONFIRMATION_PRIVATE_KEY_FILE`, `SHADOW_CONFIRMATION_KEY_ID`
+and `SHADOW_CONFIRMATION_ISSUER`. Production must bind DSH to loopback and let the authenticated reverse
+proxy strip client identity headers before setting the trusted user header.

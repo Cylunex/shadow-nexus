@@ -1,85 +1,103 @@
-import type { CaptureDraft, DomainId, DomainSummary, TodaySignal } from "./contracts.js";
+import { createHash, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
+import type { CaptureDraft, DomainId, DomainSummary, RiskLevel, TodaySignal } from "./contracts.js";
 import type { BootstrapProjection } from "./projection.js";
+
+export interface RuntimeOperation {
+  readonly operation_id: string;
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  readonly path: string;
+  readonly capability_id: string;
+  readonly tool_name: string;
+  readonly effect: string;
+  readonly risk_level: "L0" | "L1" | "L2" | "L3" | "L4";
+  readonly confirmation_resource?: {
+    readonly template: string;
+    readonly arguments: readonly string[];
+  } | null;
+}
+
+export interface RuntimeSurface {
+  readonly id: string;
+  readonly type: "summary" | "capture" | "review" | "search" | "run-status" | "app-link" | "resource-link";
+  readonly capability?: string;
+  readonly risk_level?: "L0" | "L1" | "L2" | "L3" | "L4";
+  readonly intent_prefixes?: readonly string[];
+  readonly display?: {
+    readonly metric_pointer?: string;
+    readonly detail_pointer?: string;
+    readonly collection_pointer?: string;
+    readonly unit?: string;
+  };
+  readonly operation?: RuntimeOperation;
+}
+
+export interface RuntimeReview {
+  readonly protocol: "shadow.review.v1";
+  readonly mode: "commit" | "create-only";
+  readonly operations: {
+    readonly list: RuntimeOperation;
+    readonly create: RuntimeOperation;
+    readonly commit: RuntimeOperation;
+    readonly reject: RuntimeOperation;
+  };
+}
+
+export interface RuntimeDomain {
+  readonly id: DomainId;
+  readonly product_id: string;
+  readonly plugin_id: string;
+  readonly plugin_version: string;
+  readonly instance_id: string;
+  readonly presentation: {
+    readonly short_id: string;
+    readonly title: string;
+    readonly caption: string;
+    readonly icon: string;
+    readonly color: string;
+    readonly order: number;
+  };
+  readonly connection: {
+    readonly base_url_env?: string;
+    readonly credential_env?: string;
+    readonly health_path?: string;
+    readonly context_env: Readonly<Record<string, string>>;
+  };
+  readonly surfaces: readonly RuntimeSurface[];
+  readonly review: RuntimeReview | null;
+  readonly app_id?: string;
+}
+
+export interface NexusRuntime {
+  readonly version: 1;
+  readonly protocol: "shadow.nexus.runtime.v1";
+  readonly deployment_id: string;
+  readonly build_id: string;
+  readonly domains: readonly RuntimeDomain[];
+}
 
 interface DomainConnection {
   readonly baseUrl: string;
   readonly token: string;
+  readonly context: Readonly<Record<string, string>>;
 }
 
-interface HealthConnection extends DomainConnection {
-  readonly profileId: string;
-}
-
-interface HealthSummary {
+interface ReviewEnvelope {
+  readonly protocol: "shadow.review.v1";
+  readonly review_id: string;
+  readonly reference: string;
+  readonly revision: number;
+  readonly domain: string;
+  readonly intent: string;
   readonly summary: string;
-  readonly date: string;
-  readonly indicators: {
-    readonly diet_kcal: number;
-    readonly protein_g: number;
-    readonly steps: number | null;
-    readonly workout_sessions: number;
-    readonly workout_min: number;
-    readonly weight_kg: number | null;
-    readonly sleep_hours: number | null;
-    readonly mood_score: number | null;
-  };
-}
-
-interface LedgerSummary {
-  readonly month: string;
-  readonly currency: string;
-  readonly expense: string;
-  readonly income: string;
-  readonly refund: string;
-  readonly net_spending: string;
-}
-
-interface HealthDraftReceipt {
-  readonly resource_uri: string;
-  readonly draft_id: string;
-}
-
-interface HealthCommitReceipt {
-  readonly resource_uri: string;
-  readonly status: "applied";
-}
-
-interface LedgerDraftReceipt {
-  readonly record_ref: string;
-  readonly revision: number;
-}
-
-interface LedgerCommitReceipt {
-  readonly record_ref: string;
-  readonly state: "confirmed";
-}
-
-interface HealthPendingDraft {
-  readonly resource_uri: string;
-  readonly draft_id: string;
-  readonly profile_id: string;
-  readonly record_type: "metric" | "meal" | "workout";
-  readonly effective_date: string;
   readonly fields: Readonly<Record<string, unknown>>;
-  readonly note: string;
+  readonly risk_level: RuntimeOperation["risk_level"];
+  readonly state: "pending" | "committed" | "rejected";
   readonly created_at: string;
-}
-
-interface LedgerPendingDraft {
-  readonly record_ref: string;
-  readonly revision: number;
-  readonly created_at: string;
-  readonly occurred_at: string;
-  readonly money_type: "expense" | "income" | "refund" | null;
-  readonly amount: string | null;
-  readonly currency: string | null;
-  readonly category_key: string | null;
-  readonly title: string;
-}
-
-interface PendingDraftList<T> {
-  readonly items: readonly T[];
-  readonly truncated: boolean;
+  readonly source_refs: readonly string[];
+  readonly trace_id: string;
+  readonly receipt: string | null;
+  readonly replayed: boolean;
 }
 
 export class DomainGatewayError extends Error {
@@ -87,74 +105,117 @@ export class DomainGatewayError extends Error {
 }
 
 export interface DomainGateway {
+  readonly runtime: NexusRuntime;
   project(now?: Date): Promise<BootstrapProjection>;
   discoverDrafts(): Promise<readonly CaptureDraft[]>;
-  createDraft(draft: CaptureDraft): Promise<string>;
+  createDraft(draft: CaptureDraft, actor?: string): Promise<string>;
   rejectDraft(draft: CaptureDraft): Promise<void>;
-  reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined>;
+  reconcileConfirmedDraft(draft: CaptureDraft, actor?: string): Promise<string | undefined>;
 }
 
-function environmentValue(name: string): string | undefined {
+const emptyRuntime: NexusRuntime = {
+  version: 1,
+  protocol: "shadow.nexus.runtime.v1",
+  deployment_id: "unconfigured",
+  build_id: "unconfigured",
+  domains: []
+};
+
+function environmentValue(name: string | undefined): string | undefined {
+  if (name === undefined) return undefined;
   const value = process.env[name]?.trim();
   return value === undefined || value === "" ? undefined : value;
 }
 
-function connection(baseUrlName: string, tokenName: string): DomainConnection | undefined {
-  const baseUrl = environmentValue(baseUrlName);
-  const token = environmentValue(tokenName);
-  return baseUrl === undefined || token === undefined ? undefined : { baseUrl: baseUrl.replace(/\/+$/u, ""), token };
+function runtimeString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new DomainGatewayError(500, `${label} 无效。`);
+  return value;
 }
 
-function formatMoney(value: string, currency: string): string {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return `${value} ${currency}`;
-  return new Intl.NumberFormat("zh-CN", { style: "currency", currency, maximumFractionDigits: 2 }).format(number);
+export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_FILE")): NexusRuntime {
+  if (path === undefined) return emptyRuntime;
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); }
+  catch { throw new DomainGatewayError(500, "Nexus 运行时投影无法读取。"); }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new DomainGatewayError(500, "Nexus 运行时投影无效。");
+  const candidate = parsed as Partial<NexusRuntime>;
+  if (candidate.version !== 1 || candidate.protocol !== "shadow.nexus.runtime.v1" || !Array.isArray(candidate.domains)) {
+    throw new DomainGatewayError(500, "Nexus 运行时投影版本不受支持。");
+  }
+  runtimeString(candidate.deployment_id, "deployment_id");
+  runtimeString(candidate.build_id, "build_id");
+  const ids = new Set<string>();
+  for (const domain of candidate.domains) {
+    if (typeof domain !== "object" || domain === null || ids.has(domain.id)) throw new DomainGatewayError(500, "Nexus 领域投影无效。");
+    runtimeString(domain.id, "domain id");
+    runtimeString(domain.plugin_id, "plugin id");
+    if (!Array.isArray(domain.surfaces) || typeof domain.presentation !== "object" || domain.presentation === null) {
+      throw new DomainGatewayError(500, "Nexus 领域投影无效。");
+    }
+    ids.add(domain.id);
+  }
+  return candidate as NexusRuntime;
 }
 
-function localDate(now: Date): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Shanghai",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(now);
+function domainConnection(domain: RuntimeDomain): DomainConnection | undefined {
+  const baseUrl = environmentValue(domain.connection.base_url_env);
+  const token = environmentValue(domain.connection.credential_env);
+  const context: Record<string, string> = {};
+  for (const [key, envName] of Object.entries(domain.connection.context_env)) {
+    const value = environmentValue(envName);
+    if (value === undefined) return undefined;
+    context[key] = value;
+  }
+  if (baseUrl === undefined || token === undefined) return undefined;
+  return { baseUrl: baseUrl.replace(/\/+$/u, ""), token, context };
 }
 
-function signalTime(now: Date): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false
-  }).format(now);
+function riskLevel(value: RuntimeOperation["risk_level"] | undefined): RiskLevel {
+  if (value === "L3" || value === "L4") return "high";
+  if (value === "L2") return "medium";
+  return "low";
 }
 
-function offlineDomain(id: DomainId, label: string, caption: string, configured: boolean): DomainSummary {
-  return {
-    id,
-    label,
-    caption,
-    status: "offline",
-    metric: configured ? "连接异常" : "尚未配置",
-    detail: configured ? "领域服务暂时不可用" : "未启用这个领域的数据连接"
-  };
+function pointer(value: unknown, path: string | undefined): unknown {
+  if (path === undefined || path === "") return value;
+  let current = value;
+  for (const raw of path.slice(1).split("/")) {
+    const key = raw.replaceAll("~1", "/").replaceAll("~0", "~");
+    if (typeof current !== "object" || current === null || !(key in current)) return undefined;
+    current = (current as Readonly<Record<string, unknown>>)[key];
+  }
+  return current;
 }
 
-async function requestJson<T>(
-  connectionValue: DomainConnection,
-  path: string,
-  timeoutMs: number,
-  init: RequestInit = {}
-): Promise<T> {
+function displayValue(value: unknown): string | undefined {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+function operationPath(operation: RuntimeOperation, context: Readonly<Record<string, string>>, argumentsValue: Readonly<Record<string, unknown>> = {}): string {
+  return operation.path.replaceAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu, (_match, name: string) => {
+    const value = argumentsValue[name] ?? context[name];
+    if (typeof value !== "string" && typeof value !== "number") throw new DomainGatewayError(422, `缺少领域参数 ${name}。`);
+    return encodeURIComponent(String(value));
+  });
+}
+
+async function requestJson<T>(connection: DomainConnection, operation: RuntimeOperation, timeoutMs: number, options: {
+  readonly arguments?: Readonly<Record<string, unknown>>;
+  readonly body?: unknown;
+  readonly idempotencyKey?: string;
+  readonly confirmation?: string;
+} = {}): Promise<T> {
+  const headers: Record<string, string> = { authorization: `Bearer ${connection.token}`, accept: "application/json" };
+  if (options.body !== undefined) headers["content-type"] = "application/json";
+  if (options.idempotencyKey !== undefined) headers["idempotency-key"] = options.idempotencyKey;
+  if (options.confirmation !== undefined) headers["x-shadow-confirmation"] = options.confirmation;
   let response: Response;
   try {
-    response = await fetch(`${connectionValue.baseUrl}${path}`, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${connectionValue.token}`,
-        accept: "application/json",
-        ...init.headers
-      },
+    response = await fetch(`${connection.baseUrl}${operationPath(operation, connection.context, options.arguments)}`, {
+      method: operation.method,
+      headers,
+      ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch {
@@ -165,407 +226,260 @@ async function requestJson<T>(
   catch { throw new DomainGatewayError(502, "领域服务返回了无效响应。"); }
   if (!response.ok) {
     const upstream = typeof value === "object" && value !== null && "detail" in value
-      ? String((value as { readonly detail?: unknown }).detail ?? "")
-      : "";
+      ? String((value as { readonly detail?: unknown }).detail ?? "") : "";
     const message = response.status === 401 || response.status === 403
       ? "领域连接没有执行此操作的权限。"
-      : response.status >= 500
-        ? "领域服务暂时不可用。"
-        : upstream || "领域服务拒绝了这条草稿。";
+      : response.status >= 500 ? "领域服务暂时不可用。" : upstream || "领域服务拒绝了这条 Proposal。";
     throw new DomainGatewayError(response.status >= 500 ? 503 : 422, message);
   }
   return value as T;
 }
 
-function healthPayload(draft: CaptureDraft): Record<string, unknown> {
-  const fields = draft.fields;
-  const effectiveDate = fields.effectiveDate ?? localDate(new Date(draft.createdAt));
-  if (fields.recordType === "metric") {
-    const metric: Record<string, number> = {};
-    if (fields.weightKg !== undefined) metric.weight_kg = Number(fields.weightKg);
-    if (fields.sleepHours !== undefined) metric.sleep_hours = Number(fields.sleepHours);
-    if (fields.moodScore !== undefined) metric.mood_score = Number(fields.moodScore);
-    if (Object.keys(metric).length === 0 || Object.values(metric).some((value) => !Number.isFinite(value))) {
-      throw new DomainGatewayError(422, "没有识别出可写入的体重、睡眠或情绪数值。");
-    }
-    return { record_type: "metric", effective_date: effectiveDate, fields: metric, note: draft.text.slice(0, 500) };
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(",")}}`;
   }
-  if (fields.recordType === "meal" && fields.meal !== undefined) {
-    const meal: Record<string, unknown> = {
-      meal: fields.meal,
-      name: fields.mealName ?? draft.text.replaceAll(/\s+/gu, " ").slice(0, 120)
-    };
-    if (fields.amountG !== undefined) meal.amount_g = Number(fields.amountG);
-    if (fields.kcal !== undefined) meal.kcal = Number(fields.kcal);
-    if (fields.proteinG !== undefined) meal.protein_g = Number(fields.proteinG);
-    if (fields.fatG !== undefined) meal.fat_g = Number(fields.fatG);
-    if (fields.carbG !== undefined) meal.carb_g = Number(fields.carbG);
-    if (fields.mealItemsJson !== undefined) meal.items = parseMealItems(fields.mealItemsJson);
-    if (Object.values(meal).some((value) => typeof value === "number" && !Number.isFinite(value))) {
-      throw new DomainGatewayError(422, "饮食记录包含无效的营养数值。");
-    }
-    return {
-      record_type: "meal",
-      effective_date: effectiveDate,
-      fields: meal,
-      note: draft.text.slice(0, 500)
-    };
-  }
-  if (fields.durationMin !== undefined) {
-    const workout: Record<string, unknown> = {
-      session_type: /跑/u.test(draft.text) ? "跑步" : "运动",
-      duration_min: Number(fields.durationMin)
-    };
-    if (fields.distanceKm !== undefined) workout.distance_km = Number(fields.distanceKm);
-    if (fields.rpe !== undefined) workout.rpe = Number(fields.rpe);
-    if (Object.values(workout).some((value) => typeof value === "number" && !Number.isFinite(value))) {
-      throw new DomainGatewayError(422, "运动记录包含无效数值。");
-    }
-    return { record_type: "workout", effective_date: effectiveDate, fields: workout, note: draft.text.slice(0, 500) };
-  }
-  throw new DomainGatewayError(422, "这条健康记录还缺少可确认的数值；运动记录至少需要时长。");
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new DomainGatewayError(422, "确认参数无法规范化。");
+  return encoded;
 }
 
-function ledgerPayload(draft: CaptureDraft): Record<string, unknown> {
-  const amount = draft.fields.amount;
-  const moneyType = draft.fields.moneyType;
-  if (amount === undefined || !["expense", "income", "refund"].includes(moneyType ?? "")) {
-    throw new DomainGatewayError(422, "这条收支记录还缺少金额或收支类型。");
+function confirmationReceipt(
+  domain: RuntimeDomain,
+  operation: RuntimeOperation,
+  argumentsValue: Readonly<Record<string, unknown>>,
+  actor: string | undefined,
+): string | undefined {
+  if (operation.risk_level !== "L3" && operation.risk_level !== "L4") return undefined;
+  const keyFile = environmentValue("SHADOW_CONFIRMATION_PRIVATE_KEY_FILE");
+  const keyId = environmentValue("SHADOW_CONFIRMATION_KEY_ID");
+  const issuer = environmentValue("SHADOW_CONFIRMATION_ISSUER");
+  if (keyFile === undefined || keyId === undefined || issuer === undefined || actor === undefined || actor.trim() === "") {
+    throw new DomainGatewayError(503, "高影响操作的签名确认尚未配置完整。");
   }
-  const payload: Record<string, unknown> = {
-    occurred_at: draft.fields.occurredAt ?? draft.createdAt,
-    timezone: "Asia/Shanghai",
-    money_type: moneyType,
-    amount,
-    currency: draft.fields.currency ?? "CNY",
-    title: draft.fields.title ?? draft.text.replaceAll(/\s+/gu, " ").slice(0, 160)
-  };
-  if (draft.fields.categoryKey !== undefined) payload.category_key = draft.fields.categoryKey;
-  return payload;
-}
-
-function parseMealItems(value: string): readonly Record<string, string | number>[] {
-  let parsed: unknown;
-  try { parsed = JSON.parse(value); }
-  catch { throw new DomainGatewayError(422, "菜品明细不是有效的结构化数据。"); }
-  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 50) {
-    throw new DomainGatewayError(422, "菜品明细需要包含 1 至 50 个条目。");
-  }
-  const bounds: Readonly<Record<string, number>> = {
-    amountG: 5000, kcal: 20000, proteinG: 1000, fatG: 1000, carbG: 5000
-  };
-  const aliases: Readonly<Record<string, string>> = {
-    amountG: "amount_g", kcal: "kcal", proteinG: "protein_g", fatG: "fat_g", carbG: "carb_g"
-  };
-  return parsed.map((raw) => {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-      throw new DomainGatewayError(422, "菜品明细包含无效条目。");
-    }
-    const item = raw as Readonly<Record<string, unknown>>;
-    if (Object.keys(item).some((key) => key !== "name" && !(key in bounds))) {
-      throw new DomainGatewayError(422, "菜品明细包含不支持的字段。");
-    }
-    const name = typeof item.name === "string" ? item.name.trim() : "";
-    if (name.length < 1 || name.length > 120) {
-      throw new DomainGatewayError(422, "每个菜品都需要有效名称。");
-    }
-    const normalized: Record<string, string | number> = { name };
-    for (const [key, high] of Object.entries(bounds)) {
-      if (item[key] === undefined) continue;
-      const rawValue = item[key];
-      if ((typeof rawValue !== "string" && typeof rawValue !== "number") || (typeof rawValue === "string" && rawValue.trim() === "")) {
-        throw new DomainGatewayError(422, "菜品明细包含无效的营养数值。");
-      }
-      const number = Number(rawValue);
-      if (!Number.isFinite(number) || number < 0 || number > high) {
-        throw new DomainGatewayError(422, "菜品明细包含无效的营养数值。");
-      }
-      normalized[aliases[key] ?? key] = number;
-    }
-    return normalized;
+  const resource = operation.confirmation_resource;
+  const resourceUri = resource === null || resource === undefined ? undefined : resource.template.replaceAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu, (_match, name: string) => {
+    const value = argumentsValue[name];
+    if (typeof value !== "string" && typeof value !== "number") throw new DomainGatewayError(422, `确认资源缺少参数 ${name}。`);
+    return encodeURIComponent(String(value));
   });
+  const now = new Date();
+  const expires = new Date(now.getTime() + 5 * 60_000);
+  const unsigned: Record<string, unknown> = {
+    version: 1,
+    receipt_id: `receipt-${randomUUID()}`,
+    issuer,
+    actor: actor.trim(),
+    audience: domain.id,
+    plugin_id: domain.plugin_id,
+    capability_id: operation.capability_id,
+    tool_name: operation.tool_name,
+    effect: operation.effect,
+    arguments_sha256: createHash("sha256").update(canonicalJson(argumentsValue)).digest("hex"),
+    issued_at: now.toISOString().replace(/\.000Z$/u, "Z"),
+    expires_at: expires.toISOString().replace(/\.000Z$/u, "Z"),
+    nonce: randomBytes(24).toString("base64url"),
+    single_use: true,
+    ...(resourceUri === undefined ? {} : { resource_uri: resourceUri })
+  };
+  let signature: Buffer;
+  try {
+    const key = createPrivateKey(readFileSync(keyFile));
+    if (key.asymmetricKeyType !== "ed25519") throw new Error("unsupported key");
+    signature = sign(null, Buffer.from(canonicalJson(unsigned)), key);
+  } catch {
+    throw new DomainGatewayError(503, "高影响操作的签名密钥不可用。");
+  }
+  return Buffer.from(canonicalJson({
+    ...unsigned,
+    signature: { algorithm: "EdDSA", key_id: keyId, value: signature.toString("base64url") }
+  })).toString("base64url");
 }
 
-function stringFields(fields: Readonly<Record<string, unknown>>): Record<string, string> {
-  return Object.fromEntries(Object.entries(fields).flatMap(([key, value]) =>
-    typeof value === "string" || typeof value === "number" ? [[key, String(value)]] : []
+function normalizeFieldValue(value: string): unknown {
+  const trimmed = value.trim();
+  if ((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
+    try { return JSON.parse(trimmed); } catch { return value; }
+  }
+  return value;
+}
+
+function nativeCaptureBody(draft: CaptureDraft): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(draft.fields).flatMap(([key, value]) =>
+    key === "source" || key === "original" ? [] : [[key, normalizeFieldValue(value)]]
   ));
 }
 
-function healthPendingDraft(item: HealthPendingDraft): CaptureDraft {
-  const raw = stringFields(item.fields);
-  const fields: Record<string, string> = {
-    source: "shadow-health",
-    recordType: item.record_type,
-    effectiveDate: item.effective_date
-  };
-  const aliases: Readonly<Record<string, string>> = {
-    weight_kg: "weightKg", sleep_hours: "sleepHours", mood_score: "moodScore",
-    name: "mealName", amount_g: "amountG", protein_g: "proteinG", fat_g: "fatG", carb_g: "carbG",
-    duration_min: "durationMin", distance_km: "distanceKm", session_type: "sessionType"
-  };
-  for (const [key, value] of Object.entries(raw)) fields[aliases[key] ?? key] = value;
-  if (Array.isArray(item.fields.items)) {
-    fields.mealItemsJson = JSON.stringify(item.fields.items.map((rawItem) => {
-      if (typeof rawItem !== "object" || rawItem === null || Array.isArray(rawItem)) return rawItem;
-      const source = rawItem as Readonly<Record<string, unknown>>;
-      return {
-        name: source.name,
-        ...(source.amount_g === undefined ? {} : { amountG: source.amount_g }),
-        ...(source.kcal === undefined ? {} : { kcal: source.kcal }),
-        ...(source.protein_g === undefined ? {} : { proteinG: source.protein_g }),
-        ...(source.fat_g === undefined ? {} : { fatG: source.fat_g }),
-        ...(source.carb_g === undefined ? {} : { carbG: source.carb_g })
-      };
-    }));
-  }
-  const summary = item.record_type === "meal"
-    ? [fields.meal, fields.mealName, fields.kcal === undefined ? undefined : `${fields.kcal} kcal`].filter(Boolean).join(" · ")
-    : item.record_type === "metric"
-      ? [fields.weightKg === undefined ? undefined : `${fields.weightKg} kg`, fields.sleepHours === undefined ? undefined : `睡眠 ${fields.sleepHours} h`, fields.moodScore === undefined ? undefined : `心情 ${fields.moodScore}`].filter(Boolean).join(" · ")
-      : [fields.sessionType ?? "运动", fields.durationMin === undefined ? undefined : `${fields.durationMin} 分钟`, fields.distanceKm === undefined ? undefined : `${fields.distanceKm} km`].filter(Boolean).join(" · ");
+function reviewDraft(domain: RuntimeDomain, value: ReviewEnvelope): CaptureDraft {
+  const fields = Object.fromEntries(Object.entries(value.fields).map(([key, item]) => [key, typeof item === "string" ? item : JSON.stringify(item)]));
+  const reviewSurface = domain.surfaces.find((surface) => surface.type === "review");
   return {
-    id: `federated_health_${item.draft_id}`,
-    captureGroupId: "federated_health_pending",
+    id: `federated_${domain.id}_${value.review_id}`,
+    captureGroupId: `federated_${domain.id}_pending`,
     classificationVersion: 2,
-    sessionId: `domain:health:${item.profile_id}`,
-    text: item.note || summary || "Health 待确认草稿",
-    domain: "health",
-    intent: `health.${item.record_type}`,
-    summary: summary || "Health 待确认草稿",
-    createdAt: item.created_at,
+    sessionId: `domain:${domain.id}`,
+    text: value.summary,
+    domain: domain.id,
+    intent: value.intent,
+    summary: value.summary,
+    createdAt: value.created_at,
     state: "pending",
-    risk: "medium",
+    risk: riskLevel(value.risk_level ?? reviewSurface?.risk_level),
     fields,
     origin: "domain",
-    domainDraftRef: item.resource_uri
+    domainDraftRef: value.reference,
+    domainRevision: value.revision,
+    domainReviewId: value.review_id,
+    confirmable: true,
+    sourceRefs: value.source_refs
   };
 }
 
-function ledgerPendingDraft(item: LedgerPendingDraft): CaptureDraft {
-  const amount = item.amount ?? "";
-  return {
-    id: `federated_ledger_${item.record_ref.split("/").at(-1) ?? item.revision}`,
-    captureGroupId: "federated_ledger_pending",
-    classificationVersion: 2,
-    sessionId: "domain:ledger",
-    text: item.title || "Ledger 待确认草稿",
-    domain: "ledger",
-    intent: "ledger.transaction",
-    summary: [item.title, amount === "" ? undefined : `${item.currency ?? "CNY"} ${amount}`].filter(Boolean).join(" · "),
-    createdAt: item.created_at,
-    state: "pending",
-    risk: "medium",
-    fields: {
-      source: "shadow-ledger",
-      occurredAt: item.occurred_at,
-      ...(item.money_type === null ? {} : { moneyType: item.money_type }),
-      ...(amount === "" ? {} : { amount }),
-      currency: item.currency ?? "CNY",
-      ...(item.category_key === null ? {} : { categoryKey: item.category_key }),
-      title: item.title
-    },
-    origin: "domain",
-    domainDraftRef: item.record_ref,
-    domainRevision: item.revision
-  };
+function receiptReference(domain: RuntimeDomain, reviewId: string, response: unknown): string {
+  if (typeof response === "object" && response !== null) {
+    for (const key of ["receipt", "reference"] as const) {
+      const value = (response as Readonly<Record<string, unknown>>)[key];
+      if (typeof value === "string" && value !== "") return value;
+    }
+    const fields = (response as { readonly fields?: unknown }).fields;
+    if (typeof fields === "object" && fields !== null) {
+      for (const key of ["resourceUri", "resource_uri", "recordRef", "record_ref", "publicUrl"]) {
+        const value = (fields as Readonly<Record<string, unknown>>)[key];
+        if (typeof value === "string" && value !== "") return value;
+      }
+    }
+  }
+  return `shadow://${domain.id}/reviews/${encodeURIComponent(reviewId)}`;
 }
 
 export class HttpDomainGateway implements DomainGateway {
-  private readonly health: HealthConnection | undefined;
-  private readonly ledger: DomainConnection | undefined;
+  readonly runtime: NexusRuntime;
 
-  constructor(private readonly timeoutMs = 4_000) {
-    const health = connection("SHADOW_HEALTH_BASE_URL", "SHADOW_HEALTH_AGENT_TOKEN");
-    const profileId = environmentValue("SHADOW_HEALTH_PROFILE_ID");
-    this.health = health === undefined || profileId === undefined ? undefined : { ...health, profileId };
-    this.ledger = connection("SHADOW_LEDGER_BASE_URL", "SHADOW_LEDGER_AGENT_TOKEN");
-  }
+  constructor(private readonly timeoutMs = 4_000, runtime = loadNexusRuntime()) { this.runtime = runtime; }
 
   async project(now = new Date()): Promise<BootstrapProjection> {
-    const domains: DomainSummary[] = [
-      offlineDomain("health", "Health", "身体与日常状态", this.health !== undefined),
-      offlineDomain("ledger", "Ledger", "收支与消费记忆", this.ledger !== undefined),
-      offlineDomain("travel", "Travel", "目的地、行程与足迹", false),
-      offlineDomain("archive", "Archive", "资料、附件与长期存档", false),
-      offlineDomain("foliant", "Foliant", "阅读、笔记与想法", false)
-    ];
+    const domains: DomainSummary[] = [];
     const signals: TodaySignal[] = [];
     let connected = 0;
-    const currentTime = signalTime(now);
-
-    if (this.health !== undefined) {
+    for (const domain of this.runtime.domains) {
+      const connection = domainConnection(domain);
+      const summarySurface = domain.surfaces.find((surface) => surface.type === "summary");
+      const reviewSurface = domain.surfaces.find((surface) => surface.type === "review");
+      const captureSurface = domain.surfaces.find((surface) => surface.type === "capture");
+      const base: DomainSummary = {
+        id: domain.id,
+        label: domain.presentation.title,
+        caption: domain.presentation.caption,
+        icon: domain.presentation.icon,
+        color: domain.presentation.color,
+        order: domain.presentation.order,
+        status: "offline",
+        metric: connection === undefined ? "尚未配置" : "连接异常",
+        detail: connection === undefined ? "缺少运行时连接配置" : "领域服务暂时不可用",
+        captureEnabled: captureSurface !== undefined,
+        ...(reviewSurface === undefined ? {} : { reviewRisk: riskLevel(reviewSurface.risk_level) }),
+        intentPrefixes: captureSurface?.intent_prefixes ?? []
+      };
+      if (connection === undefined || summarySurface?.operation === undefined) { domains.push(base); continue; }
       try {
-        const summary = await requestJson<HealthSummary>(
-          this.health,
-          `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/summary?date=${localDate(now)}`,
-          this.timeoutMs
-        );
-        const metric = summary.indicators.sleep_hours !== null
-          ? `${summary.indicators.sleep_hours} h`
-          : summary.indicators.weight_kg !== null
-            ? `${summary.indicators.weight_kg} kg`
-            : summary.indicators.steps !== null
-              ? `${summary.indicators.steps.toLocaleString("zh-CN")} 步`
-              : "今日已同步";
-        domains[0] = { id: "health", label: "Health", caption: "身体与日常状态", status: "ready", metric, detail: `${summary.date} · ${summary.indicators.workout_min} 分钟运动` };
-        signals.push({ id: `health-${summary.date}`, domain: "health", eyebrow: "今日健康", title: metric, detail: summary.summary, time: currentTime, tone: "calm" });
+        const value = await requestJson<unknown>(connection, summarySurface.operation, this.timeoutMs);
+        const display = summarySurface.display;
+        const collection = pointer(value, display?.collection_pointer);
+        const rawMetric = pointer(value, display?.metric_pointer);
+        const rawDetail = pointer(value, display?.detail_pointer);
+        const metric = displayValue(rawMetric) ?? (Array.isArray(collection) ? `${collection.length} 项` : "已同步");
+        const unit = display?.unit;
+        const detail = displayValue(rawDetail) ?? "领域摘要已更新";
+        const ready: DomainSummary = { ...base, status: "ready", metric: unit === undefined ? metric : `${metric} ${unit}`, detail };
+        domains.push(ready);
+        signals.push({
+          id: `${domain.id}-${now.toISOString().slice(0, 10)}`,
+          domain: domain.id,
+          eyebrow: domain.presentation.title,
+          title: ready.metric,
+          detail: ready.detail,
+          time: now.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false }),
+          tone: "calm"
+        });
         connected += 1;
-      } catch { /* The domain card already carries the isolated failure state. */ }
+      } catch { domains.push(base); }
     }
-
-    if (this.ledger !== undefined) {
-      try {
-        const summary = await requestJson<LedgerSummary>(this.ledger, "/api/machine/v1/agent/summary?currency=CNY", this.timeoutMs);
-        const metric = formatMoney(summary.net_spending, summary.currency);
-        domains[1] = { id: "ledger", label: "Ledger", caption: "收支与消费记忆", status: "ready", metric, detail: `${summary.month} 净支出 · 收入 ${formatMoney(summary.income, summary.currency)}` };
-        signals.push({ id: `ledger-${summary.month}`, domain: "ledger", eyebrow: "本月收支", title: `净支出 ${metric}`, detail: `支出 ${formatMoney(summary.expense, summary.currency)}，退款 ${formatMoney(summary.refund, summary.currency)}。`, time: currentTime, tone: "focus" });
-        connected += 1;
-      } catch { /* The domain card already carries the isolated failure state. */ }
-    }
-    return { mode: connected > 0 ? "connected" : "preview", domains, signals };
+    return { mode: connected > 0 ? "connected" : "preview", domains: domains.sort((left, right) => left.order - right.order), signals };
   }
 
   async discoverDrafts(): Promise<readonly CaptureDraft[]> {
-    const discovered: CaptureDraft[] = [];
-    await Promise.all([
-      (async () => {
-        if (this.health === undefined) return;
-        try {
-          const result = await requestJson<PendingDraftList<HealthPendingDraft>>(
-            this.health,
-            `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts?limit=200`,
-            this.timeoutMs
-          );
-          discovered.push(...result.items.map(healthPendingDraft));
-        } catch { /* One unavailable domain must not hide the other review queue. */ }
-      })(),
-      (async () => {
-        if (this.ledger === undefined) return;
-        try {
-          const result = await requestJson<PendingDraftList<LedgerPendingDraft>>(this.ledger, "/api/machine/v1/agent/drafts?limit=200", this.timeoutMs);
-          discovered.push(...result.items.map(ledgerPendingDraft));
-        } catch { /* One unavailable domain must not hide the other review queue. */ }
-      })()
-    ]);
-    return discovered.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    const discovered = await Promise.all(this.runtime.domains.map(async (domain) => {
+      const connection = domainConnection(domain);
+      if (connection === undefined || domain.review === null) return [];
+      try {
+        const result = await requestJson<{ readonly items?: readonly ReviewEnvelope[] }>(connection, domain.review.operations.list, this.timeoutMs);
+        return (result.items ?? []).filter((item) => item.protocol === "shadow.review.v1" && item.state === "pending").map((item) => reviewDraft(domain, item));
+      } catch { return []; }
+    }));
+    return discovered.flat().sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   }
 
-  async createDraft(draft: CaptureDraft): Promise<string> {
-    if (draft.domain === "health") {
-      if (this.health === undefined) throw new DomainGatewayError(503, "Health 尚未连接。");
-      if (draft.origin === "domain") {
-        const draftId = draft.domainDraftRef?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u)?.[1];
-        if (draftId === undefined) throw new DomainGatewayError(422, "Health 草稿引用无效。");
-        const result = await requestJson<HealthCommitReceipt>(
-          this.health,
-          `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(draftId)}/commit`,
-          this.timeoutMs,
-          { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
-        );
-        return result.resource_uri;
+  async createDraft(draft: CaptureDraft, actor?: string): Promise<string> {
+    const domain = this.runtime.domains.find((item) => item.id === draft.domain);
+    if (domain === undefined) throw new DomainGatewayError(422, "Proposal 指向了未安装的领域。");
+    const connection = domainConnection(domain);
+    if (connection === undefined) throw new DomainGatewayError(503, `${domain.presentation.title} 尚未连接。`);
+    if (domain.review !== null) {
+      let reviewId = draft.origin === "domain" ? draft.domainReviewId : undefined;
+      let reviewRevision = draft.domainRevision;
+      if (reviewId === undefined) {
+        const created = await requestJson<ReviewEnvelope>(connection, domain.review.operations.create, this.timeoutMs, {
+          body: {
+            intent: draft.intent,
+            summary: draft.summary,
+            fields: draft.fields,
+            source_text: draft.text,
+            source_refs: draft.sourceRefs ?? []
+          },
+          idempotencyKey: draft.id
+        });
+        if (created.protocol !== "shadow.review.v1" || typeof created.review_id !== "string" || created.domain !== domain.id) throw new DomainGatewayError(502, "领域返回了无效的审核对象。");
+        reviewId = created.review_id;
+        reviewRevision = created.revision;
       }
-      const draftResult = await requestJson<HealthDraftReceipt>(
-        this.health,
-        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts`,
-        this.timeoutMs,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json", "idempotency-key": draft.id },
-          body: JSON.stringify(healthPayload(draft))
-        }
-      );
-      const commitResult = await requestJson<HealthCommitReceipt>(
-        this.health,
-        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(draftResult.draft_id)}/commit`,
-        this.timeoutMs,
-        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
-      );
-      return commitResult.resource_uri;
-    }
-    if (draft.domain === "ledger") {
-      if (this.ledger === undefined) throw new DomainGatewayError(503, "Ledger 尚未连接。");
-      if (draft.origin === "domain") {
-        const recordId = draft.domainDraftRef?.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u)?.[1];
-        if (recordId === undefined || draft.domainRevision === undefined) throw new DomainGatewayError(422, "Ledger 草稿引用无效。");
-        const result = await requestJson<LedgerCommitReceipt>(
-          this.ledger,
-          `/api/machine/v1/agent/drafts/${encodeURIComponent(recordId)}/commit`,
-          this.timeoutMs,
-          { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: draft.domainRevision }) }
-        );
-        return result.record_ref;
-      }
-      const draftResult = await requestJson<LedgerDraftReceipt>(this.ledger, "/api/machine/v1/agent/drafts", this.timeoutMs, {
-        method: "POST",
-        headers: { "content-type": "application/json", "idempotency-key": draft.id },
-        body: JSON.stringify(ledgerPayload(draft))
+      const argumentsValue = { review_id: reviewId };
+      const confirmation = confirmationReceipt(domain, domain.review.operations.commit, argumentsValue, actor);
+      const committed = await requestJson<unknown>(connection, domain.review.operations.commit, this.timeoutMs, {
+        arguments: argumentsValue,
+        body: reviewRevision === undefined ? {} : { revision: reviewRevision },
+        idempotencyKey: `${draft.id}:commit`,
+        ...(confirmation === undefined ? {} : { confirmation })
       });
-      const recordId = draftResult.record_ref.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u)?.[1];
-      if (recordId === undefined) throw new DomainGatewayError(502, "Ledger 返回了无效的草稿引用。");
-      const commitResult = await requestJson<LedgerCommitReceipt>(
-        this.ledger,
-        `/api/machine/v1/agent/drafts/${encodeURIComponent(recordId)}/commit`,
-        this.timeoutMs,
-        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: draftResult.revision }) }
-      );
-      return commitResult.record_ref;
+      return receiptReference(domain, reviewId, committed);
     }
-    throw new DomainGatewayError(503, "这个领域尚未接入 Nexus 写入适配器。");
+    const capture = domain.surfaces.find((surface) => surface.type === "capture" && surface.operation !== undefined);
+    if (capture?.operation === undefined) throw new DomainGatewayError(503, "这个领域没有声明可用的采集入口。");
+    const result = await requestJson<unknown>(connection, capture.operation, this.timeoutMs, { body: nativeCaptureBody(draft), idempotencyKey: draft.id });
+    if (typeof result === "object" && result !== null) {
+      for (const key of ["resource_uri", "record_ref", "draft_uri", "id"]) {
+        const value = (result as Readonly<Record<string, unknown>>)[key];
+        if (typeof value === "string" && value !== "") return value;
+      }
+    }
+    return `shadow://${domain.id}/captures/${encodeURIComponent(draft.id)}`;
   }
 
   async rejectDraft(draft: CaptureDraft): Promise<void> {
-    if (draft.origin !== "domain") return;
-    if (draft.domain === "health") {
-      if (this.health === undefined) throw new DomainGatewayError(503, "Health 尚未连接。");
-      const draftId = draft.domainDraftRef?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u)?.[1];
-      if (draftId === undefined) throw new DomainGatewayError(422, "Health 草稿引用无效。");
-      await requestJson<unknown>(
-        this.health,
-        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(draftId)}/reject`,
-        this.timeoutMs,
-        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
-      );
-      return;
-    }
-    if (draft.domain === "ledger") {
-      if (this.ledger === undefined) throw new DomainGatewayError(503, "Ledger 尚未连接。");
-      const recordId = draft.domainDraftRef?.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u)?.[1];
-      if (recordId === undefined || draft.domainRevision === undefined) throw new DomainGatewayError(422, "Ledger 草稿引用无效。");
-      await requestJson<unknown>(
-        this.ledger,
-        `/api/machine/v1/agent/drafts/${encodeURIComponent(recordId)}/reject`,
-        this.timeoutMs,
-        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: draft.domainRevision }) }
-      );
-    }
+    if (draft.origin !== "domain" || draft.domainReviewId === undefined) return;
+    const domain = this.runtime.domains.find((item) => item.id === draft.domain);
+    const connection = domain === undefined ? undefined : domainConnection(domain);
+    if (domain?.review === null || domain?.review === undefined || connection === undefined) throw new DomainGatewayError(503, "领域审核入口当前不可用。");
+    await requestJson(connection, domain.review.operations.reject, this.timeoutMs, {
+      arguments: { review_id: draft.domainReviewId },
+      body: draft.domainRevision === undefined ? {} : { revision: draft.domainRevision },
+      idempotencyKey: `${draft.id}:reject`
+    });
   }
 
-  async reconcileConfirmedDraft(draft: CaptureDraft): Promise<string | undefined> {
-    if (draft.state !== "approved") return undefined;
-    if (draft.domain === "health" && this.health !== undefined) {
-      const match = draft.receipt?.match(/^shadow:\/\/health\/drafts\/(hd_[a-f0-9]{32})$/u);
-      if (match?.[1] === undefined) return undefined;
-      const result = await requestJson<HealthCommitReceipt>(
-        this.health,
-        `/api/machine/v1/agent/profiles/${encodeURIComponent(this.health.profileId)}/drafts/${encodeURIComponent(match[1])}/commit`,
-        this.timeoutMs,
-        { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }
-      );
-      return result.resource_uri;
-    }
-    if (draft.domain === "ledger" && this.ledger !== undefined) {
-      const match = draft.receipt?.match(/^shadow:\/\/ledger\/records\/([a-f0-9-]{36})$/u);
-      if (match?.[1] === undefined) return undefined;
-      const result = await requestJson<LedgerCommitReceipt>(
-        this.ledger,
-        `/api/machine/v1/agent/drafts/${encodeURIComponent(match[1])}/commit`,
-        this.timeoutMs,
-        { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revision: 1 }) }
-      );
-      return result.record_ref;
-    }
-    return undefined;
+  async reconcileConfirmedDraft(draft: CaptureDraft, actor?: string): Promise<string | undefined> {
+    if (draft.state !== "approved" || draft.domainReviewId === undefined) return undefined;
+    return this.createDraft({ ...draft, state: "pending", origin: "domain" }, actor);
   }
 }
 

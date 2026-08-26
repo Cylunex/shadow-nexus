@@ -1,6 +1,6 @@
 export const NEXUS_PROTOCOL_VERSION = "shadow.nexus.v1" as const;
 
-export type DomainId = "health" | "ledger" | "travel" | "archive" | "foliant";
+export type DomainId = string;
 export type NexusView = "today" | "capture" | "review" | DomainId;
 export type DraftState = "pending" | "approved" | "rejected";
 export type RiskLevel = "low" | "medium" | "high";
@@ -13,6 +13,12 @@ export interface DomainSummary {
   readonly status: "ready" | "attention" | "offline";
   readonly metric: string;
   readonly detail: string;
+  readonly icon: string;
+  readonly color: string;
+  readonly order: number;
+  readonly captureEnabled: boolean;
+  readonly reviewRisk?: RiskLevel;
+  readonly intentPrefixes: readonly string[];
 }
 
 export interface TodaySignal {
@@ -41,6 +47,8 @@ export interface CaptureDraft {
   readonly origin?: "nexus" | "domain";
   readonly domainDraftRef?: string;
   readonly domainRevision?: number;
+  readonly domainReviewId?: string;
+  readonly confirmable?: boolean;
   readonly fingerprint?: string;
   readonly sourceRefs?: readonly string[];
   readonly match?: ProposalMatch;

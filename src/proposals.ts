@@ -3,79 +3,33 @@ import type { CaptureDraft } from "./contracts.js";
 function compact(value: string | undefined): string {
   return (value ?? "")
     .toLocaleLowerCase()
-    .replaceAll(/餐饮美食|外卖午餐|订单详情|消费记录|财务记账|早餐|午餐|晚餐|加餐/gu, "")
     .replaceAll(/[^0-9a-z\u4e00-\u9fff]+/gu, "");
 }
 
-function decimal(value: string | undefined): string {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed.toFixed(4) : value?.trim() ?? "";
-}
-
-function dateOf(draft: CaptureDraft): string {
-  const explicit = draft.fields.effectiveDate ?? draft.fields.occurredAt;
-  const value = explicit ?? draft.createdAt;
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.valueOf()) ? value.slice(0, 10) : parsed.toISOString().slice(0, 10);
-}
-
-function fieldEqual(left: CaptureDraft, right: CaptureDraft, key: string): boolean {
-  const a = left.fields[key];
-  const b = right.fields[key];
-  return a !== undefined && b !== undefined && decimal(a) === decimal(b);
-}
-
-function ledgerSame(left: CaptureDraft, right: CaptureDraft): boolean {
-  if (decimal(left.fields.amount) === "" || decimal(left.fields.amount) !== decimal(right.fields.amount)) return false;
-  if ((left.fields.moneyType ?? "expense") !== (right.fields.moneyType ?? "expense")) return false;
-  if ((left.fields.currency ?? "CNY") !== (right.fields.currency ?? "CNY")) return false;
-  if (dateOf(left) !== dateOf(right)) return false;
-  const leftTitle = compact(left.fields.merchant ?? left.fields.title ?? left.summary);
-  const rightTitle = compact(right.fields.merchant ?? right.fields.title ?? right.summary);
-  const leftFull = compact([left.fields.merchant, left.fields.title, left.summary].filter(Boolean).join(" "));
-  const rightFull = compact([right.fields.merchant, right.fields.title, right.summary].filter(Boolean).join(" "));
-  if (leftTitle.length < 2 || rightTitle.length < 2) return false;
-  return leftTitle === rightTitle || leftFull.includes(rightTitle) || rightFull.includes(leftTitle);
-}
-
-function healthSame(left: CaptureDraft, right: CaptureDraft): boolean {
-  const kind = left.fields.recordType ?? left.intent;
-  if (kind !== (right.fields.recordType ?? right.intent) || dateOf(left) !== dateOf(right)) return false;
-  if (kind === "metric" || kind.includes("metric")) {
-    const keys = ["weightKg", "sleepHours", "moodScore"];
-    return keys.some((key) => fieldEqual(left, right, key));
-  }
-  if (kind === "workout" || kind.includes("workout")) {
-    if (!fieldEqual(left, right, "durationMin")) return false;
-    if (left.fields.distanceKm !== undefined || right.fields.distanceKm !== undefined) return fieldEqual(left, right, "distanceKm");
-    const leftName = compact(left.fields.title ?? left.summary);
-    const rightName = compact(right.fields.title ?? right.summary);
-    return leftName.length >= 2 && rightName.length >= 2
-      && (leftName === rightName || leftName.includes(rightName) || rightName.includes(leftName));
-  }
-  if ((left.fields.meal ?? "") !== (right.fields.meal ?? "")) return false;
-  const nutrition = ["kcal", "proteinG", "amountG"].filter((key) => fieldEqual(left, right, key));
-  if (nutrition.length >= 2) return true;
-  const leftName = compact(left.fields.mealName ?? left.fields.title ?? left.summary);
-  const rightName = compact(right.fields.mealName ?? right.fields.title ?? right.summary);
-  return leftName.length >= 2 && rightName.length >= 2
-    && (leftName === rightName || leftName.includes(rightName) || rightName.includes(leftName));
+function comparableFields(draft: CaptureDraft): string {
+  return Object.entries(draft.fields)
+    .filter(([key]) => key !== "source" && key !== "original")
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key}=${value.trim()}`)
+    .join("&");
 }
 
 export function sameProposal(left: CaptureDraft, right: CaptureDraft): boolean {
   if (left.domain !== right.domain) return false;
-  if (left.domain === "ledger") return ledgerSame(left, right);
-  if (left.domain === "health") return healthSame(left, right);
-  return left.intent === right.intent && compact(left.summary) === compact(right.summary);
+  if (left.intent !== right.intent) return false;
+  const leftFields = comparableFields(left);
+  const rightFields = comparableFields(right);
+  if (leftFields !== "" || rightFields !== "") return leftFields === rightFields;
+  return compact(left.summary) === compact(right.summary);
 }
 
 export function proposalFingerprint(draft: CaptureDraft): string {
   const entries = Object.entries(draft.fields)
     .filter(([key]) => key !== "source" && key !== "original")
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => `${key}=${compact(value) || decimal(value)}`)
+    .map(([key, value]) => `${key}=${value.trim()}`)
     .join("&");
-  return `${draft.domain}:${dateOf(draft)}:${entries}`;
+  return `${draft.domain}:${draft.intent}:${entries || compact(draft.summary)}`;
 }
 
 function refs(draft: CaptureDraft): readonly string[] {
@@ -92,6 +46,8 @@ export function mergeProposal(existing: CaptureDraft, incoming: CaptureDraft, no
   const origin = domain?.origin ?? existing.origin ?? incoming.origin;
   const domainDraftRef = domain?.domainDraftRef ?? existing.domainDraftRef ?? incoming.domainDraftRef;
   const domainRevision = domain?.domainRevision ?? existing.domainRevision ?? incoming.domainRevision;
+  const domainReviewId = domain?.domainReviewId ?? existing.domainReviewId ?? incoming.domainReviewId;
+  const confirmable = domain?.confirmable ?? existing.confirmable ?? incoming.confirmable;
   const attachmentRefs = [...new Set([...(existing.attachmentRefs ?? []), ...(incoming.attachmentRefs ?? [])])];
   return {
     ...existing,
@@ -101,6 +57,8 @@ export function mergeProposal(existing: CaptureDraft, incoming: CaptureDraft, no
     ...(origin === undefined ? {} : { origin }),
     ...(domainDraftRef === undefined ? {} : { domainDraftRef }),
     ...(domainRevision === undefined ? {} : { domainRevision }),
+    ...(domainReviewId === undefined ? {} : { domainReviewId }),
+    ...(confirmable === undefined ? {} : { confirmable }),
     ...(attachmentRefs.length === 0 ? {} : { attachmentRefs }),
     sourceRefs: [...new Set([...refs(existing), ...refs(incoming)])],
     fingerprint: proposalFingerprint(authoritative),

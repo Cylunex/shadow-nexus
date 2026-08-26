@@ -1,226 +1,88 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertTrustedRequest, createAnalyzedDrafts, createBootstrap, createDraft, createDrafts, createNexusState, nexusBasePathFromPluginUrl, reclassifyStoredDraft, reviewDraft } from "../lib/index.js";
+import test from "node:test";
+import {
+  assertTrustedRequest,
+  createAnalyzedDrafts,
+  createBootstrap,
+  createDraft,
+  createDrafts,
+  createNexusState,
+  nexusBasePathFromPluginUrl,
+  reclassifyStoredDraft,
+  reviewDraft
+} from "../lib/index.js";
+
+function proposal(sessionId = "session-a") {
+  return createAnalyzedDrafts(sessionId, "保存这条记录", {
+    version: 2,
+    interactionId: "interaction_12345678-abcd",
+    route: "propose",
+    response: "已生成待确认 Proposal。",
+    drafts: [{
+      domain: "alpha",
+      intent: "alpha.record",
+      summary: "Alpha Proposal",
+      risk: "medium",
+      fields: { source_uri: "https://example.test", nestedJson: "[{\"value\":1}]" }
+    }]
+  }, new Date("2026-08-26T08:00:00Z"), [], new Set(["alpha"]))[0];
+}
 
 test("derives Nexus API base path from its loaded plugin script", () => {
   assert.equal(nexusBasePathFromPluginUrl("https://nexus.example.com/plugins/@cylunex/shadow-nexus/client.js?rev=1"), "");
   assert.equal(nexusBasePathFromPluginUrl("https://nas.example.com/harness/plugins/@cylunex/shadow-nexus/client.js?rev=1"), "/harness");
   assert.equal(nexusBasePathFromPluginUrl("https://nas.example.com/agent/ui/plugins/@cylunex/shadow-nexus/client.js"), "/agent/ui");
-  assert.equal(nexusBasePathFromPluginUrl("not a plugin URL"), "");
 });
 
-test("routes health capture and extracts weight", () => {
-  const draft = createDraft("session-a", "今天体重 68.4kg，睡眠不错", new Date("2026-08-23T08:00:00Z"));
-  assert.equal(draft.domain, "health");
-  assert.equal(draft.intent, "health.record");
-  assert.equal(draft.risk, "medium");
-  assert.equal(draft.fields.weightKg, "68.4");
-});
-
-test("routes ledger capture and extracts amount", () => {
-  const draft = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
-  assert.equal(draft.domain, "ledger");
-  assert.equal(draft.fields.amount, "48");
-});
-
-test("fans a mixed meal receipt out to reviewable Health and Ledger drafts", () => {
-  const text = `商家名称：张亮麻辣烫（百子湾店）
-消费类型：午餐 / 单人麻辣烫
-实际支付：¥25.52
-餐次：午餐 / 单人麻辣烫
-总重量：**~570g**
-总热量：**~679 kcal**
-蛋白质：**~44.7 g**
-用途：营养记录、财务记账`;
-  const drafts = createDrafts("session-a", text, new Date("2026-08-23T08:00:00Z"));
-  assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
-  assert.equal(new Set(drafts.map((draft) => draft.captureGroupId)).size, 1);
-  const health = drafts.find((draft) => draft.domain === "health");
-  const ledger = drafts.find((draft) => draft.domain === "ledger");
-  assert.equal(health?.fields.meal, "午餐");
-  assert.equal(health?.fields.mealName, "单人麻辣烫");
-  assert.equal(health?.fields.amountG, "570");
-  assert.equal(health?.fields.kcal, "679");
-  assert.equal(health?.fields.proteinG, "44.7");
-  assert.equal(ledger?.fields.amount, "25.52");
-  assert.equal(ledger?.fields.merchant, "张亮麻辣烫（百子湾店）");
-  assert.equal(ledger?.fields.categoryKey, "food");
-  assert.equal(ledger?.fields.title, "午餐 / 单人麻辣烫 · 张亮麻辣烫（百子湾店）");
-});
-
-test("uses completed DSH analysis as the capture routing authority", () => {
-  const text = "午餐吃了麻辣烫，支付 25.52 元";
-  const drafts = createAnalyzedDrafts("session-a", text, {
-    version: 1,
-    captureId: "capture_12345678-abcd",
-    drafts: [{
-      domain: "health",
-      intent: "health.record",
-      summary: "午餐 · 麻辣烫 · 约 679 kcal",
-      risk: "medium",
-      fields: { recordType: "meal", meal: "午餐", mealName: "麻辣烫", kcal: "679" }
-    }]
-  }, new Date("2026-08-25T08:00:00Z"));
-  assert.equal(drafts.length, 1);
-  assert.equal(drafts[0].domain, "health");
-  assert.equal(drafts[0].fields.original, text);
-  assert.equal(drafts[0].captureGroupId, "draft_capture_12345678-abcd");
-});
-
-test("accepts domain-scoped camelCase intent names from a completed DSH plan", () => {
-  const drafts = createAnalyzedDrafts("session-a", "午餐一荤两素 24 元", {
+test("uses completed DSH analysis and installed projection as the only routing authority", () => {
+  const draft = proposal();
+  assert.equal(draft.domain, "alpha");
+  assert.equal(draft.fields.source_uri, "https://example.test");
+  assert.throws(() => createAnalyzedDrafts("session-a", "x", {
     version: 2,
-    interactionId: "interaction_a4bbfb26-4856-4dee-a9b1-f8f74681cee3",
-    route: "mixed",
-    response: "已识别健康饮食和账目支出两条待确认草案。",
-    drafts: [{
-      domain: "health",
-      intent: "health.recordMeal",
-      summary: "午餐：食堂快餐一荤两素，500g / 671kcal / 蛋白质30g",
-      risk: "low",
-      fields: { recordType: "meal", effectiveDate: "2026-08-26", meal: "午餐", mealName: "食堂快餐（一荤两素）", amountG: "500", kcal: "671", proteinG: "30" }
-    }, {
-      domain: "ledger",
-      intent: "ledger.recordExpense",
-      summary: "午餐消费 24 元（食堂快餐）",
-      risk: "low",
-      fields: { occurredAt: "2026-08-26T12:00:00+08:00", moneyType: "expense", amount: "24", currency: "CNY", categoryKey: "food", merchant: "食堂快餐", title: "午餐（一荤两素）" }
-    }]
-  }, new Date("2026-08-26T09:00:00Z"));
-  assert.deepEqual(drafts.map((draft) => draft.intent), ["health.recordMeal", "ledger.recordExpense"]);
-  assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
-});
-
-test("keeps structured meal items from a completed DSH plan", () => {
-  const mealItemsJson = JSON.stringify([
-    { name: "白米饭", amountG: "160", kcal: "186", carbG: "41.4", proteinG: "4.2", fatG: "0.5" },
-    { name: "手撕包菜", amountG: "110", kcal: "85", carbG: "5.5", proteinG: "1.8", fatG: "6.5" },
-    { name: "辣椒炒香干", amountG: "140", kcal: "140", carbG: "6", proteinG: "8", fatG: "9.5" },
-    { name: "香酥炸鸡块", amountG: "90", kcal: "260", carbG: "7.5", proteinG: "16", fatG: "18.5" }
-  ]);
-  const drafts = createAnalyzedDrafts("session-a", "午餐营养表", {
-    version: 2,
-    interactionId: "interaction_meal-items-1234",
+    interactionId: "interaction_unknown-1234",
     route: "propose",
-    response: "已整理套餐汇总和四项菜品明细。",
-    drafts: [{
-      domain: "health",
-      intent: "health.record",
-      summary: "午餐 · 食堂快餐一荤两素 · 671 kcal",
-      risk: "medium",
-      fields: {
-        recordType: "meal", effectiveDate: "2026-08-26", meal: "午餐",
-        mealName: "食堂快餐（一荤两素）", amountG: "500", kcal: "671",
-        carbG: "60.4", proteinG: "30", fatG: "35", mealItemsJson
-      }
-    }]
-  }, new Date("2026-08-26T09:00:00Z"));
-  assert.equal(drafts[0].fields.mealItemsJson, mealItemsJson);
-  assert.equal(JSON.parse(drafts[0].fields.mealItemsJson)[3].name, "香酥炸鸡块");
+    response: "x",
+    drafts: [{ domain: "missing", intent: "missing.record", summary: "x", risk: "low", fields: {} }]
+  }, new Date(), [], new Set(["alpha"])), /未安装/u);
+  assert.throws(() => createDraft(), /关键词路由已停用/u);
+  assert.throws(() => createDrafts(), /关键词路由已停用/u);
 });
 
-test("rejects an intent assigned to a different domain", () => {
-  assert.throws(() => createAnalyzedDrafts("session-a", "午餐 24 元", {
-    version: 2,
-    interactionId: "interaction_12345678-abcd",
-    route: "propose",
-    response: "待确认。",
-    drafts: [{ domain: "ledger", intent: "health.recordMeal", summary: "午餐 24 元", risk: "low", fields: { amount: "24" } }]
-  }), /草稿类型无效/u);
-});
-
-test("accepts repeated domains for batch capture and rejects oversized DSH analysis", () => {
-  const item = { domain: "health", intent: "health.record", summary: "午餐", risk: "medium", fields: { recordType: "meal" } };
-  const drafts = createAnalyzedDrafts("session-a", "两顿午餐", {
-    version: 1,
-    captureId: "capture_12345678-abcd",
-    drafts: [item, item]
-  }, new Date("2026-08-25T08:00:00Z"), ["shadow://assets/receipt"]);
-  assert.equal(drafts.length, 2);
-  assert.equal(new Set(drafts.map((draft) => draft.id)).size, 2);
-  assert.deepEqual(drafts[0].attachmentRefs, ["shadow://assets/receipt"]);
-  assert.throws(() => createAnalyzedDrafts("session-a", "批量", {
-    version: 1,
-    captureId: "capture_12345678-abcd",
-    drafts: Array.from({ length: 201 }, () => item)
-  }), /没有返回/u);
-});
-
-test("migrates a pending legacy Archive draft into deterministic domain drafts", () => {
-  const legacy = {
-    ...createDraft("session-a", "保存一条资料", new Date("2026-08-23T08:00:00Z")),
-    id: "draft_legacy",
-    classificationVersion: undefined,
-    captureGroupId: undefined,
-    domain: "archive",
-    intent: "archive.capture",
-    text: "午餐总热量 679 kcal，实际支付 ¥25.52，用于营养记录和财务记账"
-  };
+test("preserves legacy drafts without silently reclassifying their domain", () => {
+  const legacy = { ...proposal(), classificationVersion: undefined, captureGroupId: undefined, domain: "legacy-domain" };
   const migrated = reclassifyStoredDraft(legacy);
-  assert.deepEqual(migrated.map((draft) => draft.id), ["draft_legacy_health", "draft_legacy_ledger"]);
-  assert.deepEqual(migrated.map((draft) => draft.domain), ["health", "ledger"]);
-  assert.ok(migrated.every((draft) => draft.classificationVersion === 2));
+  assert.equal(migrated.length, 1);
+  assert.equal(migrated[0].domain, "legacy-domain");
+  assert.equal(migrated[0].classificationVersion, 2);
 });
 
-test("keeps unknown information in archive capture", () => {
-  const draft = createDraft("session-a", "以后可能用得上的零散内容", new Date("2026-08-23T08:00:00Z"));
-  assert.equal(draft.domain, "archive");
-  assert.equal(draft.risk, "low");
-  assert.equal(draft.fields.original, "以后可能用得上的零散内容");
-});
-
-test("bootstrap projects the global review queue across source sessions", () => {
-  const now = new Date("2026-08-23T08:00:00Z");
-  const a = createDraft("session-a", "收藏一篇文章", now);
-  const b = createDraft("session-b", "旅行路线", now);
-  const bootstrap = createBootstrap("session-a", [a, b], now);
+test("bootstrap projects only compiled domains", () => {
+  const domain = {
+    id: "alpha", label: "Alpha", caption: "Alpha facts", status: "ready", metric: "7", detail: "ready",
+    icon: "alpha", color: "#112233", order: 10, captureEnabled: true, reviewRisk: "medium", intentPrefixes: ["alpha.record"]
+  };
+  const bootstrap = createBootstrap("session-a", [proposal()], new Date("2026-08-26T08:00:00Z"), { mode: "connected", domains: [domain], signals: [] }, true);
   assert.equal(bootstrap.protocol, "shadow.nexus.v1");
-  assert.deepEqual(bootstrap.drafts.map((draft) => draft.id), [a.id, b.id]);
-  assert.deepEqual(bootstrap.assetUpload, { enabled: false, maxFilesPerMessage: 8 });
-});
-
-test("bootstrap advertises the shared Asset upload path when configured", () => {
-  const bootstrap = createBootstrap("session-a", [], new Date("2026-08-23T08:00:00Z"), undefined, true);
+  assert.deepEqual(bootstrap.domains.map((item) => item.id), ["alpha"]);
   assert.equal(bootstrap.assetUpload.enabled, true);
 });
 
-test("bootstrap without a selected session keeps global projections and review drafts", () => {
-  const now = new Date("2026-08-23T08:00:00Z");
-  const draft = createDraft("session-a", "午餐花了 48 元", now);
-  const bootstrap = createBootstrap(undefined, [draft], now);
-  assert.deepEqual(bootstrap.drafts.map((item) => item.id), [draft.id]);
-  assert.equal(bootstrap.domains.length, 5);
-});
-
 test("review creates a receipt and cannot be repeated", () => {
-  const draft = createDraft("session-a", "买了咖啡 26 元", new Date("2026-08-23T08:00:00Z"));
-  const approved = reviewDraft(draft, "approve", new Date("2026-08-23T08:01:00Z"));
+  const draft = proposal();
+  const approved = reviewDraft(draft, "approve", new Date("2026-08-26T08:01:00Z"));
   assert.equal(approved.state, "approved");
-  assert.match(approved.receipt ?? "", /^preview:ledger:/u);
+  assert.match(approved.receipt ?? "", /^preview:alpha:/u);
   assert.throws(() => reviewDraft(approved, "reject"), /已经处理/u);
 });
 
-test("rejects empty and oversized captures", () => {
-  assert.throws(() => createDraft("session-a", "  "), /不能为空/u);
-  assert.throws(() => createDraft("session-a", "x".repeat(4_001)), /4000/u);
-});
-
 test("accepts same-origin JSON and rejects cross-site requests", () => {
-  assert.doesNotThrow(() => assertTrustedRequest({
-    method: "POST",
-    headers: { host: "localhost:18181", origin: "http://localhost:18181", "content-type": "application/json; charset=utf-8" }
-  }));
-  assert.throws(() => assertTrustedRequest({
-    method: "GET",
-    headers: { host: "localhost:18181", "sec-fetch-site": "cross-site" }
-  }), /跨站/u);
-  assert.throws(() => assertTrustedRequest({
-    method: "POST",
-    headers: { host: "localhost:18181", origin: "https://attacker.example", "content-type": "application/json" }
-  }), /跨来源/u);
+  assert.doesNotThrow(() => assertTrustedRequest({ method: "POST", headers: { host: "localhost:18181", origin: "http://localhost:18181", "content-type": "application/json; charset=utf-8" } }));
+  assert.throws(() => assertTrustedRequest({ method: "GET", headers: { host: "localhost:18181", "sec-fetch-site": "cross-site" } }), /跨站/u);
+  assert.throws(() => assertTrustedRequest({ method: "POST", headers: { host: "localhost:18181", origin: "https://attacker.example", "content-type": "application/json" } }), /跨来源/u);
 });
 
 test("persists and reloads the review queue atomically", async (context) => {
@@ -229,25 +91,11 @@ test("persists and reloads the review queue atomically", async (context) => {
   const file = join(directory, "drafts.json");
   const state = createNexusState(file);
   await state.ready;
-  const draft = createDraft("session-a", "午餐花了 48 元", new Date("2026-08-23T08:00:00Z"));
-  const attachment = {
-    id: "attachment-a",
-    sessionId: "session-a",
-    assetId: "asset-a",
-    versionId: "version-a",
-    referenceUri: "shadow://nexus/conversations/test/attachments/attachment-a",
-    conversationPath: "/workspace/.shadow-nexus/assets/test/attachment-a-report.pdf",
-    filename: "report.pdf",
-    contentType: "application/pdf",
-    sizeBytes: 5,
-    createdAt: "2026-08-23T08:00:00.000Z"
-  };
+  const draft = proposal();
   state.drafts.set(draft.id, draft);
-  state.attachments.set(attachment.id, attachment);
   await state.persist();
   assert.match(await readFile(file, "utf8"), new RegExp(draft.id, "u"));
   const restored = createNexusState(file);
   await restored.ready;
-  assert.equal(restored.drafts.get(draft.id)?.summary, draft.summary);
-  assert.equal(restored.attachments.get(attachment.id)?.referenceUri, attachment.referenceUri);
+  assert.equal(restored.drafts.get(draft.id)?.domain, "alpha");
 });

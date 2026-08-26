@@ -69,6 +69,17 @@ function sessionIdFrom(url: URL): string | undefined {
   return sessionId;
 }
 
+function confirmationActor(request: IncomingMessage): string | undefined {
+  const remoteAddress = request.socket.remoteAddress ?? "";
+  if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(remoteAddress)) return undefined;
+  for (const name of ["remote-user", "x-auth-request-user", "x-forwarded-user"] as const) {
+    const value = request.headers[name];
+    const candidate = Array.isArray(value) ? value[0] : value;
+    if (candidate !== undefined && candidate.trim() !== "") return candidate.trim().slice(0, 200);
+  }
+  return undefined;
+}
+
 export interface NexusState {
   readonly drafts: Map<string, CaptureDraft>;
   readonly attachments: Map<string, NexusAssetAttachment>;
@@ -199,7 +210,8 @@ export async function handleNexusRequest(
         input.text,
         input.analysis,
         new Date(),
-        attachments.flatMap((attachment) => attachment === undefined ? [] : [attachment.referenceUri])
+        attachments.flatMap((attachment) => attachment === undefined ? [] : [attachment.referenceUri]),
+        new Set(domains.runtime.domains.map((domain) => domain.id))
       );
       const created = proposed.map((draft) => upsertProposal(state.drafts, draft).draft);
       await state.persist();
@@ -212,7 +224,8 @@ export async function handleNexusRequest(
       if (input.decision !== "approve" && input.decision !== "reject") throw new RequestError(400, "decision 无效。");
       const current = state.drafts.get(input.draftId);
       if (current === undefined || current.sessionId !== input.sessionId) throw new RequestError(404, "没有找到这个草稿。");
-      const receipt = input.decision === "approve" ? await domains.createDraft(current) : undefined;
+      if (input.decision === "approve" && current.confirmable === false) throw new RequestError(409, "领域已将这个 Proposal 标记为不可确认。");
+      const receipt = input.decision === "approve" ? await domains.createDraft(current, confirmationActor(request)) : undefined;
       if (input.decision === "reject") await domains.rejectDraft(current);
       const updated = reviewDraft(current, input.decision, new Date(), receipt);
       state.drafts.set(updated.id, updated);
@@ -230,7 +243,8 @@ export async function handleNexusRequest(
       if (pending.length === 0) throw new RequestError(404, "没有找到待处理的草稿组。");
       const updated: CaptureDraft[] = [];
       for (const current of pending) {
-        const receipt = input.decision === "approve" ? await domains.createDraft(current) : undefined;
+        if (input.decision === "approve" && current.confirmable === false) throw new RequestError(409, "组内包含不可确认的 Proposal。");
+        const receipt = input.decision === "approve" ? await domains.createDraft(current, confirmationActor(request)) : undefined;
         if (input.decision === "reject") await domains.rejectDraft(current);
         const result = reviewDraft(current, input.decision, new Date(), receipt);
         state.drafts.set(result.id, result);
