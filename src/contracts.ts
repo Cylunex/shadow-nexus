@@ -4,6 +4,7 @@ export type DomainId = "health" | "ledger" | "travel" | "archive" | "foliant";
 export type NexusView = "today" | "capture" | "review" | DomainId;
 export type DraftState = "pending" | "approved" | "rejected";
 export type RiskLevel = "low" | "medium" | "high";
+export type ProposalMatch = "new" | "linked" | "existing";
 
 export interface DomainSummary {
   readonly id: DomainId;
@@ -40,6 +41,10 @@ export interface CaptureDraft {
   readonly origin?: "nexus" | "domain";
   readonly domainDraftRef?: string;
   readonly domainRevision?: number;
+  readonly fingerprint?: string;
+  readonly sourceRefs?: readonly string[];
+  readonly match?: ProposalMatch;
+  readonly updatedAt?: string;
   readonly attachmentRefs?: readonly string[];
   readonly receipt?: string;
 }
@@ -91,7 +96,7 @@ export interface NexusAssetAttachment {
 export interface CaptureRequest {
   readonly sessionId: string;
   readonly text: string;
-  readonly analysis: CaptureAnalysis;
+  readonly analysis: CaptureAnalysis | NexusIntentPlan;
   readonly attachmentIds?: readonly string[];
 }
 
@@ -107,6 +112,21 @@ export interface CaptureAnalysis {
   readonly version: 1;
   readonly captureId: string;
   readonly drafts: readonly CaptureAnalysisDraft[];
+}
+
+export type IntentRoute = "answer" | "propose" | "mixed" | "clarify";
+
+export interface NexusIntentPlan {
+  readonly version: 2;
+  readonly interactionId: string;
+  readonly route: IntentRoute;
+  readonly response: string;
+  readonly drafts: readonly CaptureAnalysisDraft[];
+}
+
+export interface NexusInteractionResult {
+  readonly plan: NexusIntentPlan;
+  readonly drafts: readonly CaptureDraft[];
 }
 
 export interface ReviewRequest {

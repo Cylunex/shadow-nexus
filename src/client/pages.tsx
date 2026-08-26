@@ -1,7 +1,6 @@
 import type { SessionId } from "@deepseek-ai/dsh-client-runtime/client";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 import type { CaptureDraft, DomainId, DomainSummary, TodaySignal } from "../contracts.js";
-import { captureNexus } from "./assistant.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusModuleDescriptor, NexusPageProps } from "./contracts.js";
 
@@ -78,17 +77,21 @@ function SignalCard({ signal }: { readonly signal: TodaySignal }) {
   </article>;
 }
 
-export function TodayPage({ data, navigate }: NexusPageProps) {
+export function TodayPage({ data, navigate, recentSessions = [], continueSession }: NexusPageProps) {
   const pending = data.drafts.filter((draft) => draft.state === "pending").length;
   return <div className="sn-page sn-page-today">
     <header className="sn-hero">
-      <div><span className="sn-kicker">SHADOW / TODAY</span><h1>{data.greeting}</h1><p>{data.focus}</p></div>
+      <div><span className="sn-kicker">SHADOW / NOW</span><h1>{data.greeting}</h1><p>继续一件事，或者直接在下方告诉 Shadow 任何内容。</p></div>
       <div className="sn-date"><strong>{data.dateLabel}</strong><span>{data.mode === "connected" ? "领域服务已连接" : "结构预览模式"}</span></div>
     </header>
     <section className="sn-command">
-      <button type="button" onClick={() => navigate("capture")}><span>+</span><div><strong>记一下</strong><small>自然语言进入当前会话，由 Shadow 分拣</small></div><kbd>⌘ Enter</kbd></button>
-      <button type="button" onClick={() => navigate("review")}><span>◇</span><div><strong>{pending} 项待确认</strong><small>确认后才交给领域应用创建草稿</small></div><em>查看</em></button>
+      <button type="button" onClick={() => document.querySelector<HTMLTextAreaElement>(".sn-assistant-bar textarea")?.focus()}><span>＋</span><div><strong>告诉 Shadow</strong><small>聊天、记录、分析和附件使用同一个入口</small></div><kbd>⌘ Enter</kbd></button>
+      <button type="button" onClick={() => navigate("review")}><span>◇</span><div><strong>{pending} 项待我处理</strong><small>只把真正需要决定的 Proposal 带回来</small></div><em>查看</em></button>
     </section>
+    {recentSessions.length > 0 && <section className="sn-section sn-continue-section">
+      <div className="sn-section-title"><div><span>继续</span><h2>回到最近的上下文</h2></div><small>DSH Session 只作为底层容器</small></div>
+      <div className="sn-continue-list">{recentSessions.slice(0, 4).map((session) => <button type="button" key={session.id} data-current={session.current} onClick={() => continueSession?.(session.id)}><span>{session.current ? "当前" : "最近"}</span><strong>{session.title}</strong><em>继续对话</em></button>)}</div>
+    </section>}
     <section className="sn-section">
       <div className="sn-section-title"><div><span>今日脉络</span><h2>值得留意的变化</h2></div><small>{data.signals.length} 条聚合信号</small></div>
       {data.signals.length === 0
@@ -105,50 +108,14 @@ export function TodayPage({ data, navigate }: NexusPageProps) {
   </div>;
 }
 
-export function CapturePage({ sessionId, sessions, navigate, reload, showConversation }: NexusPageProps) {
-  const [text, setText] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const suggestions = ["今天跑了 5 公里，感觉不错", "午餐花了 48 元", "收藏这段资料，晚点整理", "周末想去绍兴走走"];
-
-  const submit = useCallback(async () => {
-    if (text.trim() === "" || sessionId === undefined) return;
-    setBusy(true);
-    try {
-      await captureNexus(sessions, sessionId, text);
-      setText("");
-      setError(undefined);
-      await reload();
-      navigate("review");
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "记录失败。");
-    } finally {
-      setBusy(false);
-    }
-  }, [navigate, reload, sessionId, sessions, text]);
-
-  return <div className="sn-page sn-capture-page">
-    <header className="sn-page-header"><span>CAPTURE</span><h1>先记下来，归属可以稍后决定。</h1><p>Shadow 会把原文保留在当前 DSH 会话，并生成结构化 Proposal 供你确认；图片和文件可从底部“＋”统一上传。</p></header>
-    {sessionId === undefined
-      ? <div className="sn-empty"><span>◇</span><h2>需要一个 DSH 会话</h2><p>打开对话并选择工作区，随后即可回到这里快速记录。</p><button className="sn-primary" type="button" onClick={showConversation}>打开对话</button></div>
-      : <>
-        <section className="sn-capture-box">
-          <textarea value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} placeholder="刚刚发生了什么？也可以是一笔消费、一个地点、一段想法……" autoFocus />
-          <div><small>{text.length}/4000 · 原文不会被改写</small><button type="button" disabled={busy || text.trim() === ""} onClick={() => { void submit(); }}>{busy ? "分拣中…" : "生成草稿"}</button></div>
-          {error !== undefined && <p className="sn-error">{error}</p>}
-        </section>
-        <section className="sn-suggestions"><span>可以这样开始</span>{suggestions.map((suggestion) => <button type="button" key={suggestion} onClick={() => setText(suggestion)}>{suggestion}</button>)}</section>
-        <aside className="sn-boundary"><b>一次录入，两段确认</b><p>会话负责保留上下文，Nexus 负责分拣和审核；各领域应用保留最终写入权。</p></aside>
-      </>}
-  </div>;
-}
-
-function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
+export function DraftCard({ draft, sourceTitle, target, siblingCount, reload, compact = false, onUpdated }: {
   readonly draft: CaptureDraft;
   readonly sourceTitle: string;
   readonly target: DomainSummary | undefined;
   readonly siblingCount: number;
   readonly reload: () => Promise<void>;
+  readonly compact?: boolean;
+  readonly onUpdated?: (draft: CaptureDraft) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -170,27 +137,32 @@ function DraftCard({ draft, sourceTitle, target, siblingCount, reload }: {
   async function decide(decision: "approve" | "reject") {
     setBusy(true);
     try {
-      await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("review", draft.sessionId), {
+      const updated = await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("review", draft.sessionId), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ sessionId: draft.sessionId, draftId: draft.id, decision })
       }));
       setError(undefined);
+      onUpdated?.(updated);
       await reload();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "处理草稿失败。");
     } finally { setBusy(false); }
   }
-  return <article className="sn-draft">
+  if (draft.state !== "pending") return <article className="sn-draft sn-draft-result" data-state={draft.state}>
+    <header><DomainMark domain={draft.domain} /><div><span>{draft.state === "approved" ? "已完成" : "已退回"}</span><time>{draft.summary}</time></div><em>{draft.state === "approved" ? "✓" : "—"}</em></header>
+    {draft.receipt !== undefined && <p>Receipt · {draft.receipt}</p>}
+  </article>;
+  return <article className="sn-draft" data-compact={compact}>
     <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · 来源：{sourceTitle}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "低风险" : draft.risk === "medium" ? "需确认" : "高风险"}</em></header>
     <h3>{draft.summary}</h3>
     <div className="sn-draft-target" data-ready={connectedTarget}>
       <DomainMark domain={draft.domain} />
-      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.origin === "domain" ? `这是 ${targetLabel} 已有的 Agent 草稿；Nexus 只集中审核，确认时直接提交原草稿，不会重复创建。` : draft.domain === "health" ? "你在这里确认后，Nexus 会先创建可审计的 Health 草稿，再立即写成正式健康记录；无需到 Health 二次确认。" : "你在这里确认后，Nexus 会先创建可审计的 Ledger 草稿，再提交同一条记录正式入账；原文继续留在 Nexus。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
+      <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.origin === "domain" ? `已关联 ${targetLabel} 现有草稿；确认时直接提交原草稿，不会再创建一份。` : draft.match === "existing" ? "已找到相同 Proposal，不会重复创建或写入。" : draft.domain === "health" ? "确认后会提交同一条 Health Proposal，并返回正式记录凭证。" : "确认后会提交同一条 Ledger Proposal 正式入账，并返回凭证。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
     </div>
     {siblingCount > 1 && <p className="sn-draft-group">同一次记录已拆成 {siblingCount} 张领域草稿，请分别核对和确认。</p>}
     <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{displayFieldValue(key, value)}</dd></div>)}</dl></section>
-    <details className="sn-draft-source"><summary>查看完整原文 <span>{draft.text.length} 字 · 可拖动右下角放大</span></summary><pre>{draft.text}</pre></details>
+    {!compact && <details className="sn-draft-source"><summary>查看完整原文 <span>{draft.text.length} 字 · 可拖动右下角放大</span></summary><pre>{draft.text}</pre></details>}
     {error !== undefined && <p className="sn-error">{error}</p>}
     <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未接入"} onClick={() => { void decide("approve"); }}>{connectedTarget ? draft.domain === "health" || draft.domain === "ledger" ? `确认并写入 ${targetLabel}` : `提交 ${targetLabel} 草稿` : "暂不可提交"}</button></footer>
   </article>;
@@ -251,8 +223,8 @@ export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
     return result;
   }, new Map<string, CaptureDraft[]>()).values()];
   return <div className="sn-page sn-review-page">
-    <header className="sn-page-header"><span>REVIEW / CONTROL PLANE</span><h1>所有草稿，都先在这里确认。</h1><p>Nexus 汇总各会话 Proposal 和领域 Agent 草稿；数据仍归 Health、Ledger 所有，确认前不会成为正式事实。</p></header>
-    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待确认项</h2><p>从底部“记一下”开始，或等待领域 Agent 草稿同步到这里。</p></div> : groups.map((drafts) => drafts.length > 1
+    <header className="sn-page-header"><span>INBOX / NEEDS YOU</span><h1>只处理真正需要你决定的内容。</h1><p>Nexus 汇总当前交互和领域 Agent Proposal；数据仍归 Health、Ledger 所有，确认前不会成为正式事实。</p></header>
+    {pending.length === 0 ? <div className="sn-empty"><span>◇</span><h2>暂时没有待处理项</h2><p>直接在底部告诉 Shadow 任何内容；只有需要确认的 Proposal 才会来到这里。</p></div> : groups.map((drafts) => drafts.length > 1
       ? <DraftGroup key={drafts[0]?.captureGroupId ?? drafts[0]?.id} drafts={drafts} sourceTitle={sourceTitle} domains={data.domains} reload={reload} />
       : drafts[0] === undefined ? null : <div className="sn-draft-list" key={drafts[0].id}><DraftCard draft={drafts[0]} sourceTitle={sourceTitle(drafts[0])} target={data.domains.find((domain) => domain.id === drafts[0]?.domain)} siblingCount={1} reload={reload} /></div>)}
     {settled.length > 0 && <section className="sn-history"><h2>全局已处理</h2>{settled.map((draft) => <p key={draft.id}><DomainMark domain={draft.domain} /><span>{draft.summary}</span><em data-state={draft.state}>{draft.state === "approved" ? draft.domain === "health" || draft.domain === "ledger" ? `已写入 ${draft.domain === "health" ? "Health" : "Ledger"}` : "领域草稿已创建" : "已退回"}</em></p>)}</section>}
@@ -293,9 +265,8 @@ function FoliantPage(props: NexusPageProps) { return <DomainPage {...props} doma
 
 export function builtinNexusModules(): readonly NexusModuleDescriptor[] {
   return [
-    { id: "nexus:today", apiVersion: 1, title: "今日", route: "today", icon: "◫", group: "home", order: 0, scope: "root", page: TodayPage },
-    { id: "nexus:capture", apiVersion: 1, title: "记一下", route: "capture", icon: "+", group: "home", order: 10, scope: "root", page: CapturePage },
-    { id: "nexus:review", apiVersion: 1, title: "待确认", route: "review", icon: "◇", group: "home", order: 20, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined },
+    { id: "nexus:today", apiVersion: 1, title: "现在", route: "today", icon: "◫", group: "home", order: 0, scope: "root", page: TodayPage },
+    { id: "nexus:review", apiVersion: 1, title: "待我处理", route: "review", icon: "◇", group: "home", order: 20, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined },
     { id: "shadow:health", apiVersion: 1, title: "Health", route: "health", icon: "♡", group: "domains", order: 0, scope: "root", page: HealthPage },
     { id: "shadow:ledger", apiVersion: 1, title: "Ledger", route: "ledger", icon: "⌁", group: "domains", order: 10, scope: "root", page: LedgerPage },
     { id: "shadow:travel", apiVersion: 1, title: "Travel", route: "travel", icon: "⌖", group: "domains", order: 20, scope: "root", page: TravelPage },

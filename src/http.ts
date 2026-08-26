@@ -7,6 +7,7 @@ import { AssetGatewayError, type AssetGateway } from "./assets.js";
 import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createAnalyzedDrafts, createBootstrap, reclassifyStoredDraft, reviewDraft } from "./projection.js";
+import { upsertProposal } from "./proposals.js";
 
 const MAX_BODY_BYTES = 1_048_576;
 
@@ -127,9 +128,8 @@ async function syncFederatedDrafts(state: NexusState, domains: DomainGateway): P
   const discovered = await domains.discoverDrafts();
   let changed = false;
   for (const draft of discovered) {
-    if (state.drafts.has(draft.id)) continue;
-    state.drafts.set(draft.id, draft);
-    changed = true;
+    const result = upsertProposal(state.drafts, draft);
+    changed ||= result.changed;
   }
   if (changed) await state.persist();
 }
@@ -194,14 +194,14 @@ export async function handleNexusRequest(
       if (attachments.some((attachment) => attachment === undefined || attachment.sessionId !== input.sessionId)) {
         throw new RequestError(404, "没有找到这组附件。");
       }
-      const created = createAnalyzedDrafts(
+      const proposed = createAnalyzedDrafts(
         input.sessionId.trim(),
         input.text,
         input.analysis,
         new Date(),
         attachments.flatMap((attachment) => attachment === undefined ? [] : [attachment.referenceUri])
       );
-      for (const draft of created) state.drafts.set(draft.id, draft);
+      const created = proposed.map((draft) => upsertProposal(state.drafts, draft).draft);
       await state.persist();
       send(response, 201, created);
       return;

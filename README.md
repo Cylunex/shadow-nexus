@@ -2,7 +2,7 @@
 
 Shadow Nexus is the root Web shell for the Shadow profile on DeepSeek Harness. It owns the page, navigation, and domain workbench while keeping the official DSH Conversation as a dockable or full-screen Agent surface backed by the same Session.
 
-The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, an Ask/Capture bar, unified Shadow Asset attachments, dock/full Conversation layouts, URL-backed navigation, a client module registry, DSH-completed structured capture analysis, and a federated global review queue. Capture can analyze text or uploaded assets into as many as 200 independent proposals, including multiple proposals for the same domain. Nexus also discovers pending Agent drafts already owned by Health and Ledger, reviews them by reference, and supports durable batch confirmation or rejection. The DSH model has read capabilities only; all domain writes remain behind model-hidden Host boundaries.
+The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, one intent-aware Composer, unified Shadow Asset attachments, inline Proposal review, dock/full Conversation layouts, lightweight recent-Session continuation, URL-backed navigation, a client module registry, and a federated global review queue. The Composer waits for the completed DSH response, returns ordinary discussion directly, and only creates reviewable Proposals when the user intends to save facts. A single interaction can fan out to as many as 200 independent Proposals, including multiple items in one domain. Nexus semantically links matching Nexus and Health/Ledger Agent drafts, preserves the domain reference and revision as the confirmation source of truth, and does not reopen an already confirmed fact. The DSH model has read capabilities only; all domain writes remain behind model-hidden Host boundaries.
 
 The bundle disables the official `ui-layout` row and replaces it with the Nexus root. The official Conversation, tool, permission, attachment, workflow, and other feature plugins remain unchanged and render through the child slots owned by Nexus. Install this bundle in a dedicated `shadow` profile; retain the stock `web` profile as the recovery and upgrade-diagnostic surface.
 
@@ -21,7 +21,7 @@ Architecture and domain integration notes live in `docs/`; the public client reg
 
 ## Shadow Asset attachments
 
-Images and other files use one upload path for both Ask and Capture. Nexus uploads the original to Shadow Asset, keeps a read-only local view for the active DSH Session, and adds both the stable `shadow://` reference and readable path to the conversation prompt. Capture stores the stable attachment references on every generated Proposal. The short-lived Asset upload token never enters the browser, Nexus state file, or DSH conversation log.
+Images and other files use the same Composer upload path. Nexus uploads the original to Shadow Asset, keeps a read-only local view for the active DSH Session, and adds both the stable `shadow://` reference and readable path to the conversation prompt. Any generated Proposal stores the stable attachment references. The short-lived Asset upload token never enters the browser, Nexus state file, or DSH conversation log.
 
 Configure the host plugin with:
 

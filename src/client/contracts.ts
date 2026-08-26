@@ -12,6 +12,12 @@ export interface NexusAskContext {
   readonly range?: string;
 }
 
+export interface NexusRecentSession {
+  readonly id: string;
+  readonly title: string;
+  readonly current: boolean;
+}
+
 export interface NexusPageProps {
   readonly sessionId: string | undefined;
   readonly sessions: ISessions;
@@ -22,6 +28,8 @@ export interface NexusPageProps {
   readonly navigate: (route: string) => void;
   readonly showConversation: () => void;
   readonly ask: (text: string, context?: NexusAskContext) => Promise<void>;
+  readonly recentSessions?: readonly NexusRecentSession[];
+  readonly continueSession?: (sessionId: string) => void;
 }
 
 export interface NexusModuleContext {

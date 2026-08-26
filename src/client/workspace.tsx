@@ -1,12 +1,13 @@
 import { type ISessions, type SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { NexusAssetAttachment } from "../contracts.js";
-import { askNexus, captureNexus, uploadNexusAsset } from "./assistant.js";
+import type { CaptureDraft, NexusAssetAttachment, NexusBootstrap, NexusInteractionResult } from "../contracts.js";
+import { askNexus, type InteractionPhase, submitNexus, uploadNexusAsset } from "./assistant.js";
 import { useNexusBootstrap } from "./api.js";
 import type { NexusAskContext, NexusModuleContext, NexusModuleGroup, NexusModuleRegistry } from "./contracts.js";
 import type { NexusLayoutState } from "./layout-state.js";
 import { NexusModuleBoundary } from "./module-boundary.js";
 import type { NexusNavigationStore } from "./navigation.js";
+import { DraftCard } from "./pages.js";
 
 const groupLabels: Record<NexusModuleGroup, string> = {
   home: "工作台",
@@ -28,10 +29,12 @@ export interface NexusWorkspaceProps {
 interface AssistantBarProps {
   readonly sessionId: string | undefined;
   readonly sessionTitle: string | undefined;
+  readonly contextLabel: string;
   readonly assetUploadEnabled: boolean;
   readonly maxFiles: number;
-  readonly ask: (text: string, attachments: readonly NexusAssetAttachment[]) => Promise<void>;
-  readonly capture: (text: string, attachments: readonly NexusAssetAttachment[]) => Promise<void>;
+  readonly domains: NexusBootstrap["domains"];
+  readonly reload: () => Promise<void>;
+  readonly submitInteraction: (text: string, attachments: readonly NexusAssetAttachment[], onPhase: (phase: InteractionPhase) => void) => Promise<NexusInteractionResult>;
 }
 
 interface DraftAttachment {
@@ -70,12 +73,21 @@ function savedComposerHeight(): number {
   return Number.isFinite(value) && value > 0 ? clampComposerHeight(value) : DEFAULT_COMPOSER_HEIGHT;
 }
 
-function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, ask, capture }: AssistantBarProps) {
-  const [mode, setMode] = useState<"ask" | "capture">("ask");
+function phaseLabel(phase: "uploading" | InteractionPhase | undefined): string {
+  if (phase === "uploading") return "正在保存附件…";
+  if (phase === "analyzing") return "Shadow 正在理解并读取所需上下文…";
+  if (phase === "preparing") return "正在核对已有 Proposal，避免重复…";
+  if (phase === "ready") return "处理完成";
+  return "发送";
+}
+
+function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnabled, maxFiles, domains, reload, submitInteraction }: AssistantBarProps) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<readonly DraftAttachment[]>([]);
   const [composerHeight, setComposerHeight] = useState(savedComposerHeight);
   const [busy, setBusy] = useState(false);
+  const [phase, setPhase] = useState<"uploading" | InteractionPhase>();
+  const [result, setResult] = useState<NexusInteractionResult>();
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
   const attachmentSnapshot = useRef(attachments);
@@ -93,6 +105,8 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
   useEffect(() => {
     releaseAttachments(attachmentSnapshot.current);
     setAttachments([]);
+    setResult(undefined);
+    setPhase(undefined);
     setError(undefined);
   }, [releaseAttachments, sessionId]);
 
@@ -125,18 +139,20 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
   async function submit() {
     if (sessionId === undefined || (text.trim() === "" && attachments.length === 0)) return;
     setBusy(true);
+    setResult(undefined);
     try {
       const resolved = [...attachments];
       for (let index = 0; index < resolved.length; index += 1) {
         const item = resolved[index];
         if (item === undefined || item.uploaded !== undefined) continue;
+        setPhase("uploading");
         const uploaded = await uploadNexusAsset(sessionId, item.file);
         resolved[index] = { ...item, uploaded };
         setAttachments([...resolved]);
       }
       const uploaded = resolved.flatMap((item) => item.uploaded === undefined ? [] : [item.uploaded]);
-      if (mode === "ask") await ask(text, uploaded);
-      else await capture(text, uploaded);
+      const next = await submitInteraction(text, uploaded, setPhase);
+      setResult(next);
       releaseAttachments(resolved);
       setAttachments([]);
       setText("");
@@ -145,6 +161,7 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
       setError(caught instanceof Error ? caught.message : "发送失败。");
     } finally {
       setBusy(false);
+      setPhase(undefined);
     }
   }
 
@@ -165,13 +182,25 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  return <section className="sn-assistant-bar" data-mode={mode} onDragOver={(event) => {
+  function updateDraft(updated: CaptureDraft) {
+    setResult((current) => current === undefined ? current : {
+      ...current,
+      drafts: current.drafts.map((draft) => draft.id === updated.id ? updated : draft)
+    });
+  }
+
+  return <section className="sn-assistant-bar" onDragOver={(event) => {
     if (sessionId !== undefined && !busy && assetUploadEnabled && event.dataTransfer.types.includes("Files")) event.preventDefault();
   }} onDrop={(event) => {
     if (sessionId === undefined || busy || !event.dataTransfer.types.includes("Files")) return;
     event.preventDefault();
     addFiles([...event.dataTransfer.files]);
   }}>
+    {result !== undefined && <section className="sn-inline-result">
+      <header><div><span>{result.drafts.length === 0 ? "SHADOW" : `识别到 ${String(result.drafts.length)} 项`}</span><strong>{result.plan.route === "clarify" ? "需要补充信息" : result.drafts.length === 0 ? "已回复" : "写入前请确认"}</strong></div><button type="button" aria-label="收起本次结果" onClick={() => setResult(undefined)}>×</button></header>
+      {result.plan.response.trim() !== "" && <p>{result.plan.response}</p>}
+      {result.drafts.length > 0 && <div className="sn-inline-proposals">{result.drafts.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={draft.origin === "domain" ? "已关联领域草稿" : "当前输入"} target={domains.find((domain) => domain.id === draft.domain)} siblingCount={result.drafts.length} reload={reload} compact onUpdated={updateDraft} />)}</div>}
+    </section>}
     <button className="sn-assistant-resize" type="button" aria-label="拖动调整输入区高度" title="向上拖动放大输入区；双击恢复默认高度" onPointerDown={startResize} onPointerMove={moveResize} onPointerUp={endResize} onPointerCancel={endResize} onDoubleClick={() => setComposerHeight(DEFAULT_COMPOSER_HEIGHT)} onKeyDown={(event) => {
       if (event.key === "ArrowUp" || event.key === "ArrowDown") {
         event.preventDefault();
@@ -182,14 +211,14 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
       }
     }}><span /></button>
     <div className="sn-assistant-tools">
-      <div className="sn-assistant-modes"><button type="button" data-active={mode === "ask"} onClick={() => setMode("ask")}>问一下</button><button type="button" data-active={mode === "capture"} onClick={() => setMode("capture")}>记一下</button></div>
+      <div className="sn-assistant-context"><span>当前上下文</span><strong><b>{contextLabel}</b>{sessionTitle ?? "未选择"}</strong></div>
       <button className="sn-assistant-attach" type="button" aria-label="上传图片或文件" title={assetUploadEnabled ? "上传到 Shadow Asset 并附带到当前对话" : "Shadow Asset 尚未连接"} disabled={sessionId === undefined || busy || !assetUploadEnabled} onClick={() => fileInput.current?.click()}>＋</button>
       <input ref={fileInput} type="file" multiple hidden onChange={(event) => {
         addFiles([...(event.target.files ?? [])]);
         event.target.value = "";
       }} />
     </div>
-    <textarea rows={3} style={{ height: composerHeight }} maxLength={4000} value={text} disabled={sessionId === undefined || busy} placeholder={sessionId === undefined ? "先选择一个工作台会话" : mode === "ask" ? `在「${sessionTitle ?? sessionId}」中聊聊…` : "记录一条需要确认的信息…"} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
+    <textarea rows={3} style={{ height: composerHeight }} maxLength={4000} value={text} disabled={sessionId === undefined || busy} placeholder={sessionId === undefined ? "先打开一个对话上下文" : "告诉 Shadow 任何事……聊天、记录和附件都从这里开始"} onChange={(event) => setText(event.target.value)} onKeyDown={(event) => {
       if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
         event.preventDefault();
         void submit();
@@ -201,7 +230,7 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
         addFiles(files);
       }
     }} />
-    <button className="sn-assistant-send" type="button" disabled={sessionId === undefined || busy || (text.trim() === "" && attachments.length === 0)} onClick={() => { void submit(); }}>{busy ? attachments.length > 0 ? "处理中…" : "发送中…" : "发送"}</button>
+    <button className="sn-assistant-send" type="button" disabled={sessionId === undefined || busy || (text.trim() === "" && attachments.length === 0)} onClick={() => { void submit(); }}>{busy ? phaseLabel(phase) : "发送"}</button>
     {attachments.length > 0 && <div className="sn-assistant-attachments">
       {attachments.map((attachment) => <article key={attachment.key} data-uploaded={attachment.uploaded !== undefined}>
         {attachment.previewUrl === undefined ? <span>FILE</span> : <img src={attachment.previewUrl} alt="" />}
@@ -209,7 +238,7 @@ function AssistantBar({ sessionId, sessionTitle, assetUploadEnabled, maxFiles, a
         <button type="button" aria-label={`移除 ${attachment.file.name || "附件"}`} disabled={busy} onClick={() => removeAttachment(attachment.key)}>×</button>
       </article>)}
     </div>}
-    <small>{mode === "ask" ? assetUploadEnabled ? "图片和文件统一进入 Shadow Asset，再把只读路径交给当前会话" : "只读交流；Shadow Asset 尚未连接" : "文字或附件先生成 Proposal，Review 后才写入领域应用"}</small>
+    <small>Shadow 先理解再行动；任何 Health/Ledger 写入都会原地展示 Proposal。用 /ask 强制只聊，用 /record 强制记录。</small>
     {error !== undefined && <p>{error}</p>}
   </section>;
 }
@@ -238,12 +267,17 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     await askNexus(sessions, sessionId, text, askContext ?? { module: active?.route ?? "today" }, attachments);
     layout.openAssistant();
   }, [active?.route, layout, sessionId, sessions]);
-  const capture = useCallback(async (text: string, attachments: readonly NexusAssetAttachment[]) => {
+  const submitInteraction = useCallback(async (text: string, attachments: readonly NexusAssetAttachment[], onPhase: (phase: InteractionPhase) => void) => {
     if (sessionId === undefined) throw new Error("请先选择一个工作台会话。");
-    await captureNexus(sessions, sessionId, text, attachments);
-    await reload();
-    navigation.navigate("review");
-  }, [navigation, reload, sessionId, sessions]);
+    const result = await submitNexus(sessions, sessionId, text, attachments, onPhase, { module: active?.route ?? "today" });
+    if (result.drafts.length > 0) await reload();
+    return result;
+  }, [active?.route, reload, sessionId, sessions]);
+  const recentSessions = sessionOptions.map((session) => ({ ...session, current: session.id === sessionId }));
+  const continueSession = useCallback((targetSessionId: string) => {
+    sessions.open(targetSessionId as SessionId);
+    layout.openAssistant();
+  }, [layout, sessions]);
   const Page = active?.page;
   const activeId = active?.id;
   const grouped = Object.entries(groupLabels).map(([group, label]) => ({
@@ -271,20 +305,20 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     </aside>
     <main className="sn-main">
       <header className="sn-workspace-session">
-        <div><span className="sn-orbit"><i /></span><p><small>工作台会话 · 跟随 DSH 当前选择</small><strong>{sessionTitle ?? "尚未选择会话"}</strong></p></div>
-        <label><span>切换</span><select value={sessionId ?? ""} onChange={(event) => {
+        <div><span className="sn-orbit"><i /></span><p><small>当前上下文</small><strong>{sessionTitle ?? "尚未开始一件事"}</strong></p></div>
+        <details className="sn-session-details"><summary>上下文详情</summary><label><span>DSH Session</span><select value={sessionId ?? ""} onChange={(event) => {
           if (event.target.value === "") sessions.clear();
           else sessions.open(event.target.value as SessionId);
-        }}><option value="">未选择</option>{sessionOptions.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}</select></label>
-        <button type="button" onClick={showConversation}>{sessionId === undefined ? "打开会话并新建" : `在「${sessionTitle ?? sessionId}」中展开`}</button>
+        }}><option value="">未选择</option>{sessionOptions.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}</select></label></details>
+        <button type="button" onClick={showConversation}>{sessionId === undefined ? "打开对话" : "展开对话"}</button>
       </header>
       {error !== undefined && <div className="sn-alert"><span>!</span><p>{error}</p><button type="button" onClick={() => { void reload(); }}>重试</button></div>}
       {Page === undefined || activeId === undefined
         ? <div className="sn-page"><div className="sn-empty"><h2>没有可用模块</h2></div></div>
         : <NexusModuleBoundary key={activeId} moduleId={activeId}>
-          <Page sessionId={sessionId} sessions={sessions} data={data} loading={loading} error={error} reload={reload} navigate={navigate} showConversation={showConversation} ask={ask} />
+          <Page sessionId={sessionId} sessions={sessions} data={data} loading={loading} error={error} reload={reload} navigate={navigate} showConversation={showConversation} ask={ask} recentSessions={recentSessions} continueSession={continueSession} />
         </NexusModuleBoundary>}
     </main>
-    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} ask={(text, attachments) => ask(text, undefined, attachments)} capture={capture} />
+    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} contextLabel={active?.title ?? "现在"} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} domains={data.domains} reload={reload} submitInteraction={submitInteraction} />
   </div>;
 }

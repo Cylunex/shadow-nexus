@@ -6,6 +6,7 @@ import {
   type DomainId,
   type DomainSummary,
   type NexusBootstrap,
+  type NexusIntentPlan,
   type RiskLevel,
   type TodaySignal
 } from "./contracts.js";
@@ -165,19 +166,29 @@ const supportedRisks = new Set<RiskLevel>(["low", "medium", "high"]);
 export function createAnalyzedDrafts(
   sessionId: string,
   text: string,
-  analysis: CaptureAnalysis,
+  analysis: CaptureAnalysis | NexusIntentPlan,
   now = new Date(),
   attachmentRefs: readonly string[] = []
 ): readonly CaptureDraft[] {
   const trimmed = text.trim() === "" && attachmentRefs.length > 0 ? "来自附件的批量记录" : validateCapture(text);
-  if (analysis.version !== 1 || !/^capture_[A-Za-z0-9-]{8,80}$/u.test(analysis.captureId)) {
+  const analysisId = analysis.version === 1 ? analysis.captureId : analysis.interactionId;
+  const validId = analysis.version === 1
+    ? /^capture_[A-Za-z0-9-]{8,80}$/u.test(analysisId)
+    : /^interaction_[A-Za-z0-9-]{8,80}$/u.test(analysisId);
+  if (!validId) {
     throw new Error("DSH 返回的采集分析标识无效。");
   }
-  if (!Array.isArray(analysis.drafts) || analysis.drafts.length < 1 || analysis.drafts.length > 200) {
+  if (!Array.isArray(analysis.drafts) || analysis.drafts.length > 200 || (analysis.version === 1 && analysis.drafts.length < 1)) {
     throw new Error("DSH 没有返回可确认的领域草稿。");
   }
+  if (analysis.version === 2) {
+    if (!new Set(["answer", "propose", "mixed", "clarify"]).has(analysis.route)) throw new Error("DSH 返回的处理路由无效。");
+    if (typeof analysis.response !== "string" || analysis.response.length > 4_000) throw new Error("DSH 返回的回复摘要无效。");
+    if ((analysis.route === "answer" || analysis.route === "clarify") && analysis.drafts.length > 0) throw new Error("DSH 返回的处理路由与 Proposal 不一致。");
+    if (analysis.route === "propose" && analysis.drafts.length === 0) throw new Error("DSH 没有返回需要确认的 Proposal。");
+  }
   const createdAt = now.toISOString();
-  const groupId = `draft_${analysis.captureId}`;
+  const groupId = `draft_${analysisId}`;
   return analysis.drafts.map((item, index) => {
     if (!supportedAnalysisDomains.has(item.domain)) throw new Error("DSH 返回了不支持的领域。");
     if (!supportedRisks.has(item.risk) || typeof item.intent !== "string" || !/^[a-z][a-z0-9.-]{2,80}$/u.test(item.intent)) {

@@ -13,6 +13,7 @@ export { DefaultNexusModuleRegistry } from "./client/module-registry.js";
 export { parseNexusNavigation, writeNexusNavigation } from "./client/navigation.js";
 export { assertTrustedRequest, createNexusState } from "./http.js";
 export * from "./domains.js";
+export * from "./proposals.js";
 export * from "./projection.js";
 
 export const name = "shadow-nexus";
