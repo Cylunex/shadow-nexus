@@ -29,7 +29,10 @@ const fieldLabels: Readonly<Record<string, string>> = {
   mealName: "内容",
   amountG: "总重量",
   kcal: "热量",
+  carbG: "碳水",
   proteinG: "蛋白质",
+  fatG: "脂肪",
+  mealItemsJson: "菜品明细",
   amount: "金额",
   currency: "币种",
   moneyType: "收支类型",
@@ -58,13 +61,33 @@ const fieldValueLabels: Readonly<Record<string, string>> = {
   other: "其他"
 };
 
+function displayMealItems(value: string): string {
+  try {
+    const items = JSON.parse(value) as unknown;
+    if (!Array.isArray(items)) return value;
+    return items.map((raw) => {
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return String(raw);
+      const item = raw as Readonly<Record<string, unknown>>;
+      const details = [
+        item.amountG === undefined ? undefined : `${String(item.amountG)} g`,
+        item.kcal === undefined ? undefined : `${String(item.kcal)} kcal`,
+        item.carbG === undefined ? undefined : `碳水 ${String(item.carbG)} g`,
+        item.proteinG === undefined ? undefined : `蛋白质 ${String(item.proteinG)} g`,
+        item.fatG === undefined ? undefined : `脂肪 ${String(item.fatG)} g`
+      ].filter((part): part is string => part !== undefined);
+      return `${String(item.name ?? "未命名菜品")}${details.length > 0 ? ` · ${details.join(" / ")}` : ""}`;
+    }).join("\n");
+  } catch { return value; }
+}
+
 function displayFieldValue(key: string, value: string): string {
   if (key === "weightKg") return `${value} kg`;
   if (key === "sleepHours") return `${value} 小时`;
   if (key === "distanceKm") return `${value} km`;
   if (key === "durationMin") return `${value} 分钟`;
-  if (key === "amountG" || key === "proteinG") return `${value} g`;
+  if (key === "amountG" || key === "proteinG" || key === "carbG" || key === "fatG") return `${value} g`;
   if (key === "kcal") return `${value} kcal`;
+  if (key === "mealItemsJson") return displayMealItems(value);
   if (key === "amount") return `¥${value}`;
   return fieldValueLabels[value] ?? value;
 }
@@ -122,7 +145,7 @@ export function DraftCard({ draft, sourceTitle, target, siblingCount, reload, co
   const connectedTarget = (draft.domain === "health" || draft.domain === "ledger") && target?.status === "ready";
   const targetLabel = target?.label ?? draft.domain;
   const submittedKeys = draft.domain === "health"
-    ? ["recordType", "weightKg", "sleepHours", "moodScore", "distanceKm", "durationMin", "rpe", "meal", "mealName", "amountG", "kcal", "proteinG"]
+    ? ["recordType", "weightKg", "sleepHours", "moodScore", "distanceKm", "durationMin", "rpe", "meal", "mealName", "amountG", "kcal", "carbG", "proteinG", "fatG", "mealItemsJson"]
     : draft.domain === "ledger"
       ? ["moneyType", "amount", "currency", "categoryKey", "title"]
       : [];
@@ -161,7 +184,7 @@ export function DraftCard({ draft, sourceTitle, target, siblingCount, reload, co
       <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.origin === "domain" ? `已关联 ${targetLabel} 现有草稿；确认时直接提交原草稿，不会再创建一份。` : draft.match === "existing" ? "已找到相同 Proposal，不会重复创建或写入。" : draft.domain === "health" ? "确认后会提交同一条 Health Proposal，并返回正式记录凭证。" : "确认后会提交同一条 Ledger Proposal 正式入账，并返回凭证。" : draft.domain === "health" || draft.domain === "ledger" ? "领域连接当前不可用，请恢复连接后再确认。" : "这个领域尚未接入 Nexus 写入适配器。"}</span></p>
     </div>
     {siblingCount > 1 && <p className="sn-draft-group">同一次记录已拆成 {siblingCount} 张领域草稿，请分别核对和确认。</p>}
-    <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{displayFieldValue(key, value)}</dd></div>)}</dl></section>
+    <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key} data-field={key}><dt>{fieldLabels[key] ?? key}</dt><dd>{displayFieldValue(key, value)}</dd></div>)}</dl></section>
     {!compact && <details className="sn-draft-source"><summary>查看完整原文 <span>{draft.text.length} 字 · 可拖动右下角放大</span></summary><pre>{draft.text}</pre></details>}
     {error !== undefined && <p className="sn-error">{error}</p>}
     <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未接入"} onClick={() => { void decide("approve"); }}>{connectedTarget ? draft.domain === "health" || draft.domain === "ledger" ? `确认并写入 ${targetLabel}` : `提交 ${targetLabel} 草稿` : "暂不可提交"}</button></footer>

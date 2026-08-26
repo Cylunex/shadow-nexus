@@ -206,7 +206,8 @@ export function createAnalyzedDrafts(
     }
     const fields: Record<string, string> = { source: "shadow-nexus", original: trimmed };
     for (const [key, value] of Object.entries(item.fields)) {
-      if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(key) || typeof value !== "string" || value.length > 500) {
+      const maxLength = key === "mealItemsJson" ? 8_000 : 500;
+      if (!/^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(key) || typeof value !== "string" || value.length > maxLength) {
         throw new Error("DSH 返回的结构化字段无效。");
       }
       fields[key] = value;

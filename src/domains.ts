@@ -60,7 +60,7 @@ interface HealthPendingDraft {
   readonly profile_id: string;
   readonly record_type: "metric" | "meal" | "workout";
   readonly effective_date: string;
-  readonly fields: Readonly<Record<string, string | number>>;
+  readonly fields: Readonly<Record<string, unknown>>;
   readonly note: string;
   readonly created_at: string;
 }
@@ -198,6 +198,9 @@ function healthPayload(draft: CaptureDraft): Record<string, unknown> {
     if (fields.amountG !== undefined) meal.amount_g = Number(fields.amountG);
     if (fields.kcal !== undefined) meal.kcal = Number(fields.kcal);
     if (fields.proteinG !== undefined) meal.protein_g = Number(fields.proteinG);
+    if (fields.fatG !== undefined) meal.fat_g = Number(fields.fatG);
+    if (fields.carbG !== undefined) meal.carb_g = Number(fields.carbG);
+    if (fields.mealItemsJson !== undefined) meal.items = parseMealItems(fields.mealItemsJson);
     if (Object.values(meal).some((value) => typeof value === "number" && !Number.isFinite(value))) {
       throw new DomainGatewayError(422, "饮食记录包含无效的营养数值。");
     }
@@ -241,8 +244,52 @@ function ledgerPayload(draft: CaptureDraft): Record<string, unknown> {
   return payload;
 }
 
-function stringFields(fields: Readonly<Record<string, string | number>>): Record<string, string> {
-  return Object.fromEntries(Object.entries(fields).map(([key, value]) => [key, String(value)]));
+function parseMealItems(value: string): readonly Record<string, string | number>[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); }
+  catch { throw new DomainGatewayError(422, "菜品明细不是有效的结构化数据。"); }
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > 50) {
+    throw new DomainGatewayError(422, "菜品明细需要包含 1 至 50 个条目。");
+  }
+  const bounds: Readonly<Record<string, number>> = {
+    amountG: 5000, kcal: 20000, proteinG: 1000, fatG: 1000, carbG: 5000
+  };
+  const aliases: Readonly<Record<string, string>> = {
+    amountG: "amount_g", kcal: "kcal", proteinG: "protein_g", fatG: "fat_g", carbG: "carb_g"
+  };
+  return parsed.map((raw) => {
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+      throw new DomainGatewayError(422, "菜品明细包含无效条目。");
+    }
+    const item = raw as Readonly<Record<string, unknown>>;
+    if (Object.keys(item).some((key) => key !== "name" && !(key in bounds))) {
+      throw new DomainGatewayError(422, "菜品明细包含不支持的字段。");
+    }
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    if (name.length < 1 || name.length > 120) {
+      throw new DomainGatewayError(422, "每个菜品都需要有效名称。");
+    }
+    const normalized: Record<string, string | number> = { name };
+    for (const [key, high] of Object.entries(bounds)) {
+      if (item[key] === undefined) continue;
+      const rawValue = item[key];
+      if ((typeof rawValue !== "string" && typeof rawValue !== "number") || (typeof rawValue === "string" && rawValue.trim() === "")) {
+        throw new DomainGatewayError(422, "菜品明细包含无效的营养数值。");
+      }
+      const number = Number(rawValue);
+      if (!Number.isFinite(number) || number < 0 || number > high) {
+        throw new DomainGatewayError(422, "菜品明细包含无效的营养数值。");
+      }
+      normalized[aliases[key] ?? key] = number;
+    }
+    return normalized;
+  });
+}
+
+function stringFields(fields: Readonly<Record<string, unknown>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(fields).flatMap(([key, value]) =>
+    typeof value === "string" || typeof value === "number" ? [[key, String(value)]] : []
+  ));
 }
 
 function healthPendingDraft(item: HealthPendingDraft): CaptureDraft {
@@ -254,10 +301,24 @@ function healthPendingDraft(item: HealthPendingDraft): CaptureDraft {
   };
   const aliases: Readonly<Record<string, string>> = {
     weight_kg: "weightKg", sleep_hours: "sleepHours", mood_score: "moodScore",
-    name: "mealName", amount_g: "amountG", protein_g: "proteinG",
+    name: "mealName", amount_g: "amountG", protein_g: "proteinG", fat_g: "fatG", carb_g: "carbG",
     duration_min: "durationMin", distance_km: "distanceKm", session_type: "sessionType"
   };
   for (const [key, value] of Object.entries(raw)) fields[aliases[key] ?? key] = value;
+  if (Array.isArray(item.fields.items)) {
+    fields.mealItemsJson = JSON.stringify(item.fields.items.map((rawItem) => {
+      if (typeof rawItem !== "object" || rawItem === null || Array.isArray(rawItem)) return rawItem;
+      const source = rawItem as Readonly<Record<string, unknown>>;
+      return {
+        name: source.name,
+        ...(source.amount_g === undefined ? {} : { amountG: source.amount_g }),
+        ...(source.kcal === undefined ? {} : { kcal: source.kcal }),
+        ...(source.protein_g === undefined ? {} : { proteinG: source.protein_g }),
+        ...(source.fat_g === undefined ? {} : { fatG: source.fat_g }),
+        ...(source.carb_g === undefined ? {} : { carbG: source.carb_g })
+      };
+    }));
+  }
   const summary = item.record_type === "meal"
     ? [fields.meal, fields.mealName, fields.kcal === undefined ? undefined : `${fields.kcal} kcal`].filter(Boolean).join(" · ")
     : item.record_type === "metric"

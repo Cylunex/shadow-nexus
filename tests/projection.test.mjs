@@ -94,6 +94,34 @@ test("accepts domain-scoped camelCase intent names from a completed DSH plan", (
   assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
 });
 
+test("keeps structured meal items from a completed DSH plan", () => {
+  const mealItemsJson = JSON.stringify([
+    { name: "白米饭", amountG: "160", kcal: "186", carbG: "41.4", proteinG: "4.2", fatG: "0.5" },
+    { name: "手撕包菜", amountG: "110", kcal: "85", carbG: "5.5", proteinG: "1.8", fatG: "6.5" },
+    { name: "辣椒炒香干", amountG: "140", kcal: "140", carbG: "6", proteinG: "8", fatG: "9.5" },
+    { name: "香酥炸鸡块", amountG: "90", kcal: "260", carbG: "7.5", proteinG: "16", fatG: "18.5" }
+  ]);
+  const drafts = createAnalyzedDrafts("session-a", "午餐营养表", {
+    version: 2,
+    interactionId: "interaction_meal-items-1234",
+    route: "propose",
+    response: "已整理套餐汇总和四项菜品明细。",
+    drafts: [{
+      domain: "health",
+      intent: "health.record",
+      summary: "午餐 · 食堂快餐一荤两素 · 671 kcal",
+      risk: "medium",
+      fields: {
+        recordType: "meal", effectiveDate: "2026-08-26", meal: "午餐",
+        mealName: "食堂快餐（一荤两素）", amountG: "500", kcal: "671",
+        carbG: "60.4", proteinG: "30", fatG: "35", mealItemsJson
+      }
+    }]
+  }, new Date("2026-08-26T09:00:00Z"));
+  assert.equal(drafts[0].fields.mealItemsJson, mealItemsJson);
+  assert.equal(JSON.parse(drafts[0].fields.mealItemsJson)[3].name, "香酥炸鸡块");
+});
+
 test("rejects an intent assigned to a different domain", () => {
   assert.throws(() => createAnalyzedDrafts("session-a", "午餐 24 元", {
     version: 2,

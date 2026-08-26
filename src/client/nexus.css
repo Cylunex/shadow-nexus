@@ -266,6 +266,8 @@ body[data-shadow-nexus-root="true"] { margin: 0; overflow: hidden; }
 .sn-draft dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
 .sn-draft dl div { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 9px; padding: 7px 8px; border-radius: 6px; background: rgba(81, 102, 147, .1); font-size: 8px; }
 .sn-draft dt { flex: 0 0 auto; color: #596984; }.sn-draft dd { overflow-wrap: anywhere; margin: 0; color: #a1b1ce; text-align: right; }
+.sn-draft dl div[data-field="mealItemsJson"] { grid-column: 1 / -1; align-items: flex-start; }
+.sn-draft dl div[data-field="mealItemsJson"] dd { white-space: pre-line; }
 .sn-draft-source { margin-top: 13px; border: 1px solid rgba(124, 147, 198, .12); border-radius: 8px; background: rgba(7, 12, 23, .46); }
 .sn-draft-source summary { padding: 9px 10px; color: #8495b7; cursor: pointer; font-size: 8px; list-style-position: inside; }
 .sn-draft-source summary span { float: right; color: #53627d; font-size: 7px; font-weight: 400; line-height: 1.4; }

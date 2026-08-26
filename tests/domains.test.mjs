@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
-import { HttpDomainGateway, createDraft, createDrafts } from "../lib/index.js";
+import { HttpDomainGateway, createAnalyzedDrafts, createDraft, createDrafts } from "../lib/index.js";
 
 async function jsonBody(request) {
   const chunks = [];
@@ -34,7 +34,10 @@ async function fixtureServer() {
         profile_id: "primary",
         record_type: "meal",
         effective_date: "2026-08-22",
-        fields: { meal: "晚餐", name: "鸡胸肉", kcal: 420, protein_g: 35 },
+        fields: {
+          meal: "晚餐", name: "健身餐", kcal: 420, protein_g: 35, fat_g: 12, carb_g: 38,
+          items: [{ name: "鸡胸肉", amount_g: 180, kcal: 280, protein_g: 35, fat_g: 8, carb_g: 3 }]
+        },
         note: "晚餐鸡胸肉",
         created_at: "2026-08-22T12:00:00Z",
         status: "pending"
@@ -173,6 +176,61 @@ test("sends confirmed meal nutrition and actual payment to separate domain draft
   assert.equal(ledgerBody.category_key, "food");
 });
 
+test("sends every confirmed dish and macro to the Health draft", async (context) => {
+  const fixture = await fixtureServer();
+  context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
+  process.env.SHADOW_HEALTH_BASE_URL = fixture.baseUrl;
+  process.env.SHADOW_HEALTH_AGENT_TOKEN = "health-test-token";
+  process.env.SHADOW_HEALTH_PROFILE_ID = "primary";
+  const gateway = new HttpDomainGateway(1_000);
+  const mealItemsJson = JSON.stringify([
+    { name: "白米饭", amountG: "160", kcal: "186", carbG: "41.4", proteinG: "4.2", fatG: "0.5" },
+    { name: "手撕包菜", amountG: "110", kcal: "85", carbG: "5.5", proteinG: "1.8", fatG: "6.5" },
+    { name: "辣椒炒香干", amountG: "140", kcal: "140", carbG: "6", proteinG: "8", fatG: "9.5" },
+    { name: "香酥炸鸡块", amountG: "90", kcal: "260", carbG: "7.5", proteinG: "16", fatG: "18.5" }
+  ]);
+  const draft = createAnalyzedDrafts("session-meal-items", "午餐营养表", {
+    version: 2,
+    interactionId: "interaction_meal-items-5678",
+    route: "propose",
+    response: "已整理套餐及菜品明细。",
+    drafts: [{
+      domain: "health", intent: "health.record", summary: "午餐 · 一荤两素 · 671 kcal", risk: "medium",
+      fields: {
+        recordType: "meal", effectiveDate: "2026-08-26", meal: "午餐", mealName: "食堂快餐（一荤两素）",
+        amountG: "500", kcal: "671", carbG: "60.4", proteinG: "30", fatG: "35", mealItemsJson
+      }
+    }]
+  }, new Date("2026-08-26T09:00:00Z"))[0];
+  await gateway.createDraft(draft);
+  const healthBody = fixture.bodies.find((body) => body.record_type === "meal");
+  assert.deepEqual(healthBody.fields, {
+    meal: "午餐", name: "食堂快餐（一荤两素）", amount_g: 500, kcal: 671,
+    protein_g: 30, fat_g: 35, carb_g: 60.4,
+    items: [
+      { name: "白米饭", amount_g: 160, kcal: 186, protein_g: 4.2, fat_g: 0.5, carb_g: 41.4 },
+      { name: "手撕包菜", amount_g: 110, kcal: 85, protein_g: 1.8, fat_g: 6.5, carb_g: 5.5 },
+      { name: "辣椒炒香干", amount_g: 140, kcal: 140, protein_g: 8, fat_g: 9.5, carb_g: 6 },
+      { name: "香酥炸鸡块", amount_g: 90, kcal: 260, protein_g: 16, fat_g: 18.5, carb_g: 7.5 }
+    ]
+  });
+
+  const invalid = createAnalyzedDrafts("session-meal-items", "错误菜品明细", {
+    version: 2,
+    interactionId: "interaction_meal-items-invalid",
+    route: "propose",
+    response: "待确认。",
+    drafts: [{
+      domain: "health", intent: "health.record", summary: "错误菜品", risk: "medium",
+      fields: {
+        recordType: "meal", effectiveDate: "2026-08-26", meal: "午餐", mealName: "套餐",
+        mealItemsJson: JSON.stringify([{ name: "米饭", kcal: true }])
+      }
+    }]
+  })[0];
+  await assert.rejects(() => gateway.createDraft(invalid), /无效的营养数值/u);
+});
+
 test("reconciles an already confirmed legacy Health proposal into canonical data", async (context) => {
   const fixture = await fixtureServer();
   context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
@@ -232,6 +290,8 @@ test("federates existing domain drafts into Nexus without creating duplicates", 
   assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
   assert.ok(drafts.every((draft) => draft.origin === "domain"));
   assert.equal(drafts[0].fields.effectiveDate, "2026-08-22");
+  assert.equal(JSON.parse(drafts[0].fields.mealItemsJson)[0].name, "鸡胸肉");
+  assert.equal(drafts[0].fields.carbG, "38");
   assert.equal(drafts[1].fields.occurredAt, "2026-08-22T11:30:00+08:00");
   assert.equal(await gateway.createDraft(drafts[0]), "shadow://health/diet/44");
   assert.equal(await gateway.createDraft(drafts[1]), "shadow://ledger/records/33333333-3333-4333-8333-333333333333");
