@@ -255,6 +255,20 @@ async function requestJson<T>(connection: DomainConnection, operation: RuntimeOp
   return value as T;
 }
 
+async function requestHealth(connection: DomainConnection, path: string, timeoutMs: number): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${connection.baseUrl}${path.startsWith("/") ? path : `/${path}`}`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${connection.token}`, accept: "application/json" },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch {
+    throw new DomainGatewayError(503, "领域服务暂时不可用。");
+  }
+  if (!response.ok) throw new DomainGatewayError(503, "领域服务暂时不可用。");
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   if (typeof value === "object" && value !== null) {
@@ -404,7 +418,16 @@ export class HttpDomainGateway implements DomainGateway {
         ...(reviewSurface === undefined ? {} : { reviewRisk: riskLevel(reviewSurface.risk_level) }),
         intentPrefixes: captureSurface?.intent_prefixes ?? []
       };
-      if (connection === undefined || summarySurface?.operation === undefined) { domains.push(base); continue; }
+      if (connection === undefined) { domains.push(base); continue; }
+      if (summarySurface?.operation === undefined) {
+        if (domain.connection.health_path === undefined) { domains.push(base); continue; }
+        try {
+          await requestHealth(connection, domain.connection.health_path, this.timeoutMs);
+          domains.push({ ...base, status: "ready", metric: "已连接", detail: "领域服务与能力已就绪" });
+          connected += 1;
+        } catch { domains.push(base); }
+        continue;
+      }
       try {
         const value = await requestJson<unknown>(connection, summarySurface.operation, this.timeoutMs);
         const display = summarySurface.display;

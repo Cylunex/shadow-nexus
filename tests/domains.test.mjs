@@ -54,7 +54,7 @@ function runtime() {
       plugin_version: "1.0.0",
       instance_id: "beta-test",
       presentation: { short_id: "beta", title: "Beta", caption: "Beta archive", icon: "beta", color: "#445566", order: 20 },
-      connection: { base_url_env: "BETA_URL", credential_env: "BETA_TOKEN", context_env: {} },
+      connection: { base_url_env: "BETA_URL", credential_env: "BETA_TOKEN", health_path: "/beta/healthz", context_env: {} },
       surfaces: [{
         id: "capture", type: "capture", operation_id: "create_beta_capture",
         operation: operation("create_beta_capture", "POST", "/beta/captures", "beta.captures.draft", "L1", "draft"),
@@ -75,6 +75,10 @@ async function fixtureServer() {
     calls.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records" }));
+    if (request.method === "GET" && request.url === "/beta/healthz") {
+      response.statusCode = 204;
+      return response.end();
+    }
     if (request.method === "POST" && request.url === "/alpha/search") return response.end(JSON.stringify({ items: [{ title: `Found ${body.query}`, summary: "Search detail", resource_uri: "shadow://alpha/records/1" }] }));
     if (request.method === "GET" && request.url === "/alpha/reviews") return response.end(JSON.stringify({ protocol: "shadow.review.v1", items: [{
       protocol: "shadow.review.v1", review_id: "existing", reference: "shadow://alpha/reviews/existing", revision: 3,
@@ -134,6 +138,8 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
   assert.equal(projection.domains[0].intentPrefixes[0], "alpha.record");
   assert.equal(projection.domains[0].searchEnabled, true);
   assert.equal(projection.domains[0].appUrl, "https://alpha.example.test/");
+  assert.equal(projection.domains[1].status, "ready");
+  assert.equal(projection.domains[1].metric, "已连接");
 
   const search = await gateway.search("needle", 10);
   assert.deepEqual(search.searchedDomains, ["alpha"]);
