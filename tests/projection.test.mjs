@@ -70,6 +70,40 @@ test("uses completed DSH analysis as the capture routing authority", () => {
   assert.equal(drafts[0].captureGroupId, "draft_capture_12345678-abcd");
 });
 
+test("accepts domain-scoped camelCase intent names from a completed DSH plan", () => {
+  const drafts = createAnalyzedDrafts("session-a", "午餐一荤两素 24 元", {
+    version: 2,
+    interactionId: "interaction_a4bbfb26-4856-4dee-a9b1-f8f74681cee3",
+    route: "mixed",
+    response: "已识别健康饮食和账目支出两条待确认草案。",
+    drafts: [{
+      domain: "health",
+      intent: "health.recordMeal",
+      summary: "午餐：食堂快餐一荤两素，500g / 671kcal / 蛋白质30g",
+      risk: "low",
+      fields: { recordType: "meal", effectiveDate: "2026-08-26", meal: "午餐", mealName: "食堂快餐（一荤两素）", amountG: "500", kcal: "671", proteinG: "30" }
+    }, {
+      domain: "ledger",
+      intent: "ledger.recordExpense",
+      summary: "午餐消费 24 元（食堂快餐）",
+      risk: "low",
+      fields: { occurredAt: "2026-08-26T12:00:00+08:00", moneyType: "expense", amount: "24", currency: "CNY", categoryKey: "food", merchant: "食堂快餐", title: "午餐（一荤两素）" }
+    }]
+  }, new Date("2026-08-26T09:00:00Z"));
+  assert.deepEqual(drafts.map((draft) => draft.intent), ["health.recordMeal", "ledger.recordExpense"]);
+  assert.deepEqual(drafts.map((draft) => draft.domain), ["health", "ledger"]);
+});
+
+test("rejects an intent assigned to a different domain", () => {
+  assert.throws(() => createAnalyzedDrafts("session-a", "午餐 24 元", {
+    version: 2,
+    interactionId: "interaction_12345678-abcd",
+    route: "propose",
+    response: "待确认。",
+    drafts: [{ domain: "ledger", intent: "health.recordMeal", summary: "午餐 24 元", risk: "low", fields: { amount: "24" } }]
+  }), /草稿类型无效/u);
+});
+
 test("accepts repeated domains for batch capture and rejects oversized DSH analysis", () => {
   const item = { domain: "health", intent: "health.record", summary: "午餐", risk: "medium", fields: { recordType: "meal" } };
   const drafts = createAnalyzedDrafts("session-a", "两顿午餐", {

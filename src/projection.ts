@@ -191,7 +191,11 @@ export function createAnalyzedDrafts(
   const groupId = `draft_${analysisId}`;
   return analysis.drafts.map((item, index) => {
     if (!supportedAnalysisDomains.has(item.domain)) throw new Error("DSH 返回了不支持的领域。");
-    if (!supportedRisks.has(item.risk) || typeof item.intent !== "string" || !/^[a-z][a-z0-9.-]{2,80}$/u.test(item.intent)) {
+    const validIntent = typeof item.intent === "string"
+      && item.intent.length <= 81
+      && item.intent.startsWith(`${item.domain}.`)
+      && /^[a-z][A-Za-z0-9.-]+$/u.test(item.intent);
+    if (!supportedRisks.has(item.risk) || !validIntent) {
       throw new Error("DSH 返回的草稿类型无效。");
     }
     if (typeof item.summary !== "string" || item.summary.trim() === "" || item.summary.length > 240) {
