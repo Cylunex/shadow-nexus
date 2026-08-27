@@ -214,11 +214,18 @@ function displayValue(value: unknown): string | undefined {
 }
 
 function operationPath(operation: RuntimeOperation, context: Readonly<Record<string, string>>, argumentsValue: Readonly<Record<string, unknown>> = {}): string {
-  return operation.path.replaceAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu, (_match, name: string) => {
+  const consumed = new Set<string>();
+  const path = operation.path.replaceAll(/\{([A-Za-z][A-Za-z0-9_]*)\}/gu, (_match, name: string) => {
     const value = argumentsValue[name] ?? context[name];
     if (typeof value !== "string" && typeof value !== "number") throw new DomainGatewayError(422, `缺少领域参数 ${name}。`);
+    consumed.add(name);
     return encodeURIComponent(String(value));
   });
+  const url = new URL(path, "http://shadow.local");
+  for (const [name, value] of Object.entries(context)) {
+    if (!consumed.has(name) && !url.searchParams.has(name)) url.searchParams.set(name, value);
+  }
+  return `${url.pathname}${url.search}`;
 }
 
 async function requestJson<T>(connection: DomainConnection, operation: RuntimeOperation, timeoutMs: number, options: {

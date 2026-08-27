@@ -193,6 +193,19 @@ test("commits and rejects a federated review by its opaque domain id", async (co
   assert.deepEqual(fixture.calls.find((call) => call.url === "/alpha/reviews/existing/reject")?.body, { revision: 3 });
 });
 
+test("projects unused connection context into operation query parameters", async (context) => {
+  const fixture = await fixtureServer();
+  context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
+  process.env.ALPHA_URL = fixture.baseUrl;
+  process.env.ALPHA_TOKEN = "alpha-token";
+  process.env.ALPHA_PROFILE = "primary";
+  const value = runtime();
+  value.domains[0].connection.context_env = { profile_id: "ALPHA_PROFILE" };
+  const gateway = new HttpDomainGateway(1_000, value);
+  await gateway.discoverDrafts();
+  assert.equal(fixture.calls.some((call) => call.url === "/alpha/reviews?profile_id=primary"), true);
+});
+
 test("loads runtime files and signs L3 execution receipts", async (context) => {
   const directory = await mkdtemp(join(tmpdir(), "shadow-nexus-runtime-"));
   context.after(() => rm(directory, { recursive: true, force: true }));
