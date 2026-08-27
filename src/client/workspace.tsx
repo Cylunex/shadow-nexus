@@ -1,8 +1,8 @@
 import { type ISessions, type SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { CaptureDraft, NexusAssetAttachment, NexusBootstrap, NexusInteractionResult } from "../contracts.js";
+import type { CaptureDraft, NexusAssetAttachment, NexusBootstrap, NexusContextCreate, NexusContextPack, NexusInteractionResult } from "../contracts.js";
 import { askNexus, type InteractionPhase, submitNexus, uploadNexusAsset } from "./assistant.js";
-import { useNexusBootstrap } from "./api.js";
+import { nexusEndpoint, nexusJson, useNexusBootstrap } from "./api.js";
 import type { NexusAskContext, NexusModuleContext, NexusModuleGroup, NexusModuleRegistry } from "./contracts.js";
 import type { NexusLayoutState } from "./layout-state.js";
 import { NexusModuleBoundary } from "./module-boundary.js";
@@ -42,6 +42,24 @@ interface DraftAttachment {
   readonly file: File;
   readonly previewUrl: string | undefined;
   readonly uploaded?: NexusAssetAttachment;
+}
+
+interface PendingAppCapture {
+  readonly capture_id: string;
+  readonly source_type: string;
+  readonly text?: string;
+  readonly source_app?: string;
+  readonly file?: {
+    readonly url: string;
+    readonly name: string;
+    readonly type: string;
+    readonly size: number;
+  };
+}
+
+interface AppShellBridge {
+  getPendingCapture(): string;
+  completePendingCapture(captureId: string): void;
 }
 
 function draftAttachment(file: File): DraftAttachment {
@@ -91,6 +109,7 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
   const [error, setError] = useState<string>();
   const fileInput = useRef<HTMLInputElement>(null);
   const attachmentSnapshot = useRef(attachments);
+  const importedCapture = useRef<string>();
   const resizeSnapshot = useRef<{ readonly pointerId: number; readonly startY: number; readonly startHeight: number }>();
   attachmentSnapshot.current = attachments;
 
@@ -104,6 +123,7 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
   }, [composerHeight]);
   useEffect(() => {
     releaseAttachments(attachmentSnapshot.current);
+    attachmentSnapshot.current = [];
     setAttachments([]);
     setResult(undefined);
     setPhase(undefined);
@@ -135,6 +155,41 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
       return current.filter((item) => item.key !== key);
     });
   }
+
+  useEffect(() => {
+    if (sessionId === undefined) return;
+    const shell = (globalThis as typeof globalThis & { readonly ShellBridge?: AppShellBridge }).ShellBridge;
+    if (shell === undefined) return;
+    let capture: PendingAppCapture;
+    try {
+      capture = JSON.parse(shell.getPendingCapture()) as PendingAppCapture;
+    } catch { return; }
+    if (typeof capture.capture_id !== "string" || importedCapture.current === capture.capture_id) return;
+    importedCapture.current = capture.capture_id;
+    let cancelled = false;
+    void (async () => {
+      try {
+        let sharedFile: File | undefined;
+        if (capture.file !== undefined) {
+          if (!assetUploadEnabled) throw new Error("Shadow Asset 尚未连接，无法接收分享文件。");
+          const response = await fetch(new URL(capture.file.url, globalThis.location.origin), { cache: "no-store" });
+          if (!response.ok) throw new Error("无法读取 Android 分享文件。");
+          const blob = await response.blob();
+          if (cancelled) return;
+          sharedFile = new File([blob], capture.file.name || "shared-file", { type: capture.file.type || blob.type || "application/octet-stream" });
+        }
+        if (typeof capture.text === "string" && capture.text.trim() !== "") {
+          setText((current) => current.trim() === "" ? capture.text?.trim() ?? "" : `${current}\n\n${capture.text?.trim() ?? ""}`);
+        }
+        if (sharedFile !== undefined) addFiles([sharedFile]);
+        if (!cancelled) shell.completePendingCapture(capture.capture_id);
+      } catch (caught) {
+        importedCapture.current = undefined;
+        if (!cancelled) setError(caught instanceof Error ? caught.message : "无法接收 Android 分享内容。");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [assetUploadEnabled, sessionId]);
 
   async function submit() {
     if (sessionId === undefined || (text.trim() === "" && attachments.length === 0)) return;
@@ -279,6 +334,25 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     sessions.open(targetSessionId as SessionId);
     layout.openAssistant();
   }, [layout, sessions]);
+  const addContext = useCallback(async (input: Omit<NexusContextCreate, "session_id">): Promise<NexusContextPack> => {
+    if (sessionId === undefined) throw new Error("请先选择一个工作台会话。");
+    const contextPack = await nexusJson<NexusContextPack>(await fetch(nexusEndpoint("context"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...input, session_id: sessionId })
+    }));
+    await reload();
+    return contextPack;
+  }, [reload, sessionId]);
+  const removeContext = useCallback(async (contextId: string): Promise<void> => {
+    if (sessionId === undefined) throw new Error("请先选择一个工作台会话。");
+    await nexusJson<{ readonly removed: true }>(await fetch(nexusEndpoint("context/remove"), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, context_id: contextId })
+    }));
+    await reload();
+  }, [reload, sessionId]);
   const Page = active?.page;
   const activeId = active?.id;
   const grouped = Object.entries(groupLabels).map(([group, label]) => ({
@@ -307,19 +381,19 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     <main className="sn-main">
       <header className="sn-workspace-session">
         <div><span className="sn-orbit"><i /></span><p><small>当前上下文</small><strong>{sessionTitle ?? "尚未开始一件事"}</strong></p></div>
-        <details className="sn-session-details"><summary>上下文详情</summary><label><span>DSH Session</span><select value={sessionId ?? ""} onChange={(event) => {
+        <details className="sn-session-details"><summary>上下文详情{data.contexts.length > 0 ? ` · ${String(data.contexts.length)}` : ""}</summary><div className="sn-context-panel"><label><span>DSH Session</span><select value={sessionId ?? ""} onChange={(event) => {
           if (event.target.value === "") sessions.clear();
           else sessions.open(event.target.value as SessionId);
-        }}><option value="">未选择</option>{sessionOptions.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}</select></label></details>
+        }}><option value="">未选择</option>{sessionOptions.map((option) => <option key={option.id} value={option.id}>{option.title}</option>)}</select></label>{data.contexts.map((item) => <div className="sn-context-chip" key={item.context_id}><span>{item.source_domain ?? "上下文"}</span><strong>{item.goal ?? item.resource_refs[0] ?? "已选资源"}</strong><button type="button" aria-label="移除上下文" onClick={() => { void removeContext(item.context_id); }}>×</button></div>)}</div></details>
         <button type="button" onClick={showConversation}>{sessionId === undefined ? "打开对话" : "展开对话"}</button>
       </header>
       {error !== undefined && <div className="sn-alert"><span>!</span><p>{error}</p><button type="button" onClick={() => { void reload(); }}>重试</button></div>}
       {Page === undefined || activeId === undefined
         ? <div className="sn-page"><div className="sn-empty"><h2>没有可用模块</h2></div></div>
         : <NexusModuleBoundary key={activeId} moduleId={activeId}>
-          <Page sessionId={sessionId} sessions={sessions} data={data} loading={loading} error={error} reload={reload} navigate={navigate} showConversation={showConversation} ask={ask} recentSessions={recentSessions} continueSession={continueSession} />
+          <Page sessionId={sessionId} sessions={sessions} data={data} loading={loading} error={error} reload={reload} navigate={navigate} showConversation={showConversation} ask={ask} addContext={addContext} removeContext={removeContext} recentSessions={recentSessions} continueSession={continueSession} />
         </NexusModuleBoundary>}
     </main>
-    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} contextLabel={active?.title ?? "现在"} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} domains={data.domains} reload={reload} submitInteraction={submitInteraction} />
+    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} contextLabel={`${active?.title ?? "现在"}${data.contexts.length > 0 ? ` · ${String(data.contexts.length)} 项` : ""}`} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} domains={data.domains} reload={reload} submitInteraction={submitInteraction} />
   </div>;
 }

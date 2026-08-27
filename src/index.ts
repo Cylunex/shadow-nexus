@@ -11,7 +11,7 @@ export { nexusBasePathFromPluginUrl } from "./client-path.js";
 export { NexusLayoutState } from "./client/layout-state.js";
 export { DefaultNexusModuleRegistry } from "./client/module-registry.js";
 export { parseNexusNavigation, writeNexusNavigation } from "./client/navigation.js";
-export { assertTrustedRequest, createNexusState } from "./http.js";
+export { assertTrustedRequest, createContextPack, createNexusState } from "./http.js";
 export * from "./domains.js";
 export * from "./proposals.js";
 export * from "./projection.js";

@@ -1,10 +1,11 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import { AssetGatewayError, type AssetGateway } from "./assets.js";
-import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, ReviewRequest } from "./contracts.js";
+import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, NexusContextCreate, NexusContextPack, NexusSuggestion, ReviewRequest, SuggestionAction } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createAnalyzedDrafts, createBootstrap, reclassifyStoredDraft, reviewDraft } from "./projection.js";
 import { upsertProposal } from "./proposals.js";
@@ -83,13 +84,26 @@ function confirmationActor(request: IncomingMessage): string | undefined {
 export interface NexusState {
   readonly drafts: Map<string, CaptureDraft>;
   readonly attachments: Map<string, NexusAssetAttachment>;
+  readonly contexts: Map<string, NexusContextPack>;
+  readonly suggestionFeedback: Map<string, SuggestionFeedback>;
   readonly ready: Promise<void>;
   persist(): Promise<void>;
+}
+
+interface SuggestionFeedback {
+  readonly dedupeKey: string;
+  readonly domain: string;
+  readonly ruleId: string;
+  readonly action: Extract<SuggestionAction, "ignore" | "snooze" | "mute">;
+  readonly until?: string;
+  readonly updatedAt: string;
 }
 
 export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?.trim()): NexusState {
   const drafts = new Map<string, CaptureDraft>();
   const attachments = new Map<string, NexusAssetAttachment>();
+  const contexts = new Map<string, NexusContextPack>();
+  const suggestionFeedback = new Map<string, SuggestionFeedback>();
   const ready = filePath === undefined || filePath === "" ? Promise.resolve() : (async () => {
     try {
       const value = JSON.parse(await readFile(filePath, "utf8")) as unknown;
@@ -113,6 +127,26 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
           attachments.set(attachment.id, attachment);
         }
       }
+      const storedContexts = typeof value === "object" && value !== null && !Array.isArray(value)
+        && Array.isArray((value as { readonly contexts?: unknown }).contexts)
+        ? (value as { readonly contexts: unknown[] }).contexts
+        : [];
+      for (const item of storedContexts) {
+        if (typeof item === "object" && item !== null && typeof (item as NexusContextPack).context_id === "string") {
+          const context = item as NexusContextPack;
+          contexts.set(context.context_id, context);
+        }
+      }
+      const storedFeedback = typeof value === "object" && value !== null && !Array.isArray(value)
+        && Array.isArray((value as { readonly suggestionFeedback?: unknown }).suggestionFeedback)
+        ? (value as { readonly suggestionFeedback: unknown[] }).suggestionFeedback
+        : [];
+      for (const item of storedFeedback) {
+        if (typeof item === "object" && item !== null && typeof (item as SuggestionFeedback).dedupeKey === "string") {
+          const feedback = item as SuggestionFeedback;
+          suggestionFeedback.set(feedback.dedupeKey, feedback);
+        }
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -121,17 +155,59 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
   return {
     drafts,
     attachments,
+    contexts,
+    suggestionFeedback,
     ready,
     persist: () => {
       if (filePath === undefined || filePath === "") return Promise.resolve();
       writes = writes.then(async () => {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
         const temporary = `${filePath}.tmp`;
-        await writeFile(temporary, `${JSON.stringify({ version: 2, drafts: [...drafts.values()], attachments: [...attachments.values()] }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        await writeFile(temporary, `${JSON.stringify({ version: 4, drafts: [...drafts.values()], attachments: [...attachments.values()], contexts: [...contexts.values()], suggestionFeedback: [...suggestionFeedback.values()] }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
         await rename(temporary, filePath);
       });
       return writes;
     }
+  };
+}
+
+function contextStringArray(value: unknown, label: string, pattern: RegExp, maximum: number): readonly string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maximum || value.some((item) => typeof item !== "string" || !pattern.test(item))) {
+    throw new RequestError(400, `${label} 无效。`);
+  }
+  return [...new Set(value)];
+}
+
+export function createContextPack(input: Partial<NexusContextCreate>, now = new Date()): NexusContextPack {
+  const sessionId = input.session_id?.trim();
+  if (sessionId === undefined || sessionId === "" || sessionId.length > 256) throw new RequestError(400, "session_id 无效。");
+  const sourceDomain = input.source_domain ?? null;
+  if (sourceDomain !== null && !/^[a-z][a-z0-9-]{1,63}$/u.test(sourceDomain)) throw new RequestError(400, "source_domain 无效。");
+  const resources = contextStringArray(input.resource_refs, "resource_refs", /^shadow:\/\//u, 32);
+  const assets = contextStringArray(input.asset_refs, "asset_refs", /^shadow:\/\//u, 32);
+  const grants = contextStringArray(input.capability_grants, "capability_grants", /^[a-z][a-z0-9-]*(?:\.[a-z][A-Za-z0-9-]*)+$/u, 64);
+  const goal = input.goal ?? null;
+  if (goal !== null && (typeof goal !== "string" || goal.trim() === "" || goal.length > 500)) throw new RequestError(400, "goal 无效。");
+  const timeRange = input.time_range ?? null;
+  if (timeRange !== null) {
+    const start = Date.parse(timeRange.start);
+    const end = Date.parse(timeRange.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end) throw new RequestError(400, "time_range 无效。");
+  }
+  if (resources.length === 0 && assets.length === 0 && goal === null && timeRange === null) throw new RequestError(400, "上下文不能为空。");
+  return {
+    protocol: "shadow.context.v1",
+    context_id: `ctx_${randomUUID()}`,
+    session_id: sessionId,
+    source_domain: sourceDomain,
+    resource_refs: resources,
+    time_range: timeRange,
+    goal: goal?.trim() ?? null,
+    asset_refs: assets,
+    capability_grants: grants,
+    created_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString()
   };
 }
 
@@ -143,6 +219,15 @@ async function syncFederatedDrafts(state: NexusState, domains: DomainGateway): P
     changed ||= result.changed;
   }
   if (changed) await state.persist();
+}
+
+function visibleSuggestions(items: readonly NexusSuggestion[], state: NexusState, now: Date): readonly NexusSuggestion[] {
+  return items.filter((item) => {
+    const direct = state.suggestionFeedback.get(item.dedupe_key);
+    if (direct?.action === "ignore") return false;
+    if (direct?.action === "snooze" && direct.until !== undefined && Date.parse(direct.until) > now.getTime()) return false;
+    return ![...state.suggestionFeedback.values()].some((entry) => entry.action === "mute" && entry.domain === item.domain && entry.ruleId === item.rule_id);
+  });
 }
 
 export async function handleNexusRequest(
@@ -158,9 +243,63 @@ export async function handleNexusRequest(
     const url = new URL(request.url ?? "/", "http://dsh.local");
     if (request.method === "GET" && url.pathname === "/shadow-nexus/bootstrap") {
       const sessionId = sessionIdFrom(url);
+      const now = new Date();
+      let contextsChanged = false;
+      for (const [id, context] of state.contexts) {
+        if (Date.parse(context.expires_at) <= now.getTime()) {
+          state.contexts.delete(id);
+          contextsChanged = true;
+        }
+      }
+      if (contextsChanged) await state.persist();
       await syncFederatedDrafts(state, domains);
       const projection = await domains.project();
-      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], new Date(), projection, assets.configured));
+      const suggestions = visibleSuggestions(await domains.discoverSuggestions(), state, now);
+      const contexts = sessionId === undefined ? [] : [...state.contexts.values()].filter((context) => context.session_id === sessionId);
+      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], now, projection, assets.configured, contexts, suggestions));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/suggestions/action") {
+      const input = await readJson(request);
+      const suggestion = input.suggestion;
+      const action = input.action;
+      if (typeof suggestion !== "object" || suggestion === null) throw new RequestError(400, "建议标识无效。");
+      if (action !== "ignore" && action !== "snooze" && action !== "mute") throw new RequestError(400, "建议操作无效。");
+      const item = suggestion as NexusSuggestion;
+      if (typeof item.dedupe_key !== "string" || item.dedupe_key.length < 1 || item.dedupe_key.length > 256
+        || typeof item.domain !== "string" || !/^[a-z][a-z0-9-]{1,63}$/u.test(item.domain)
+        || typeof item.rule_id !== "string" || !/^[a-z][a-z0-9-]*(?:\.[a-z][A-Za-z0-9-]*)+$/u.test(item.rule_id)
+        || !Array.isArray(item.allowed_actions)) throw new RequestError(400, "建议标识无效。");
+      if (!item.allowed_actions.includes(action)) throw new RequestError(409, "领域未允许这项操作。");
+      const now = new Date();
+      const feedback: SuggestionFeedback = {
+        dedupeKey: item.dedupe_key,
+        domain: item.domain,
+        ruleId: item.rule_id,
+        action,
+        ...(action === "snooze" ? { until: new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString() } : {}),
+        updatedAt: now.toISOString()
+      };
+      state.suggestionFeedback.set(feedback.dedupeKey, feedback);
+      await state.persist();
+      send(response, 200, feedback);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/context") {
+      const context = createContextPack(await readJson(request) as Partial<NexusContextCreate>);
+      state.contexts.set(context.context_id, context);
+      await state.persist();
+      send(response, 201, context);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/context/remove") {
+      const input = await readJson(request);
+      if (typeof input.session_id !== "string" || typeof input.context_id !== "string") throw new RequestError(400, "上下文标识无效。");
+      const context = state.contexts.get(input.context_id);
+      if (context === undefined || context.session_id !== input.session_id) throw new RequestError(404, "没有找到这个上下文。");
+      state.contexts.delete(context.context_id);
+      await state.persist();
+      send(response, 200, { removed: true });
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/search") {

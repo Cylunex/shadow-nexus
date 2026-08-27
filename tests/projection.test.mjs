@@ -7,6 +7,7 @@ import {
   assertTrustedRequest,
   createAnalyzedDrafts,
   createBootstrap,
+  createContextPack,
   createDraft,
   createDrafts,
   createNexusState,
@@ -69,6 +70,45 @@ test("bootstrap projects only compiled domains", () => {
   assert.equal(bootstrap.protocol, "shadow.nexus.v1");
   assert.deepEqual(bootstrap.domains.map((item) => item.id), ["alpha"]);
   assert.equal(bootstrap.assetUpload.enabled, true);
+});
+
+test("creates expiring Context Packs and persists them with the current session", async (context) => {
+  const pack = createContextPack({
+    session_id: "session-a",
+    source_domain: "archive",
+    resource_refs: ["shadow://archive/records/record-1"],
+    goal: "解释这份资料"
+  }, new Date("2026-08-27T08:00:00Z"));
+  assert.equal(pack.protocol, "shadow.context.v1");
+  assert.equal(pack.expires_at, "2026-08-28T08:00:00.000Z");
+  assert.throws(() => createContextPack({ session_id: "session-a" }), /不能为空/u);
+
+  const directory = await mkdtemp(join(tmpdir(), "shadow-nexus-context-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "state.json");
+  const state = createNexusState(file);
+  await state.ready;
+  state.contexts.set(pack.context_id, pack);
+  await state.persist();
+  const restored = createNexusState(file);
+  await restored.ready;
+  assert.equal(restored.contexts.get(pack.context_id)?.goal, "解释这份资料");
+});
+
+test("persists suggestion feedback separately from domain facts", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shadow-nexus-suggestion-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "state.json");
+  const state = createNexusState(file);
+  await state.ready;
+  state.suggestionFeedback.set("health:weekly:2026-W35", {
+    dedupeKey: "health:weekly:2026-W35", domain: "health", ruleId: "health.weekly-review",
+    action: "snooze", until: "2026-08-28T08:00:00Z", updatedAt: "2026-08-27T08:00:00Z"
+  });
+  await state.persist();
+  const restored = createNexusState(file);
+  await restored.ready;
+  assert.equal(restored.suggestionFeedback.get("health:weekly:2026-W35")?.action, "snooze");
 });
 
 test("review creates a receipt and cannot be repeated", () => {

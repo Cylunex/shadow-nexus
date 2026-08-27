@@ -40,6 +40,7 @@ function runtime() {
       connection: { base_url_env: "ALPHA_URL", credential_env: "ALPHA_TOKEN", context_env: {} },
       surfaces: [
         { id: "today", type: "summary", operation_id: "alpha_summary", operation: operation("alpha_summary", "GET", "/alpha/summary", "alpha.summary.read"), display: { metric_pointer: "/metric", detail_pointer: "/detail" } },
+        { id: "suggestions", type: "suggestions", operation_id: "alpha_suggestions", operation: operation("alpha_suggestions", "GET", "/alpha/suggestions", "alpha.suggestions.read") },
         { id: "search", type: "search", operation_id: "search_alpha", operation: operation("search_alpha", "POST", "/alpha/search", "alpha.records.search"), display: { collection_pointer: "/items", item_title_pointer: "/title", item_detail_pointer: "/summary", item_reference_pointer: "/resource_uri" } },
         { id: "capture", type: "capture", operation_id: "create_alpha_review", operation: create, risk_level: "L2", intent_prefixes: ["alpha.record"] },
         { id: "review", type: "review", risk_level: "L2", intent_prefixes: ["alpha.record"] }
@@ -75,6 +76,14 @@ async function fixtureServer() {
     calls.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records" }));
+    if (request.method === "GET" && request.url === "/alpha/suggestions") return response.end(JSON.stringify({ items: [{
+      protocol: "shadow.suggestion.v1", suggestion_id: "sug_alpha_weekly_12345678", domain: "alpha",
+      rule_id: "alpha.weekly-review", dedupe_key: "alpha:weekly:2026-W35", title: "Alpha weekly",
+      summary: "Weekly summary", reason: "Because seven records changed.", evidence_refs: ["shadow://alpha/reports/week"],
+      importance: "normal", confidence: 0.8, allowed_actions: ["view_evidence", "snooze", "ignore"],
+      created_at: "2026-08-26T00:00:00Z", valid_until: "2099-08-31T00:00:00Z",
+      data_freshness: { observed_at: "2026-08-26T00:00:00Z", missing_ratio: 0 }
+    }] }));
     if (request.method === "GET" && request.url === "/beta/healthz") {
       response.statusCode = 204;
       return response.end();
@@ -155,6 +164,8 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
   const discovered = await gateway.discoverDrafts();
   assert.equal(discovered[0].domainReviewId, "existing");
   assert.equal(discovered[0].domainRevision, 3);
+  const suggestions = await gateway.discoverSuggestions();
+  assert.equal(suggestions[0].suggestion_id, "sug_alpha_weekly_12345678");
   assert.equal(await gateway.createDraft(draft("alpha")), "shadow://alpha/records/1");
   assert.equal(await gateway.createDraft(draft("beta", { source_kind: "url", source_uri: "https://example.test" })), "shadow://beta/captures/1");
   assert.ok(fixture.calls.every((call) => call.headers.authorization?.startsWith("Bearer ")));

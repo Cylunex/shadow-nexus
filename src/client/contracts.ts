@@ -1,6 +1,6 @@
 import type { ISessions } from "@deepseek-ai/dsh-client-runtime/client";
 import type { ComponentType } from "react";
-import type { NexusBootstrap } from "../contracts.js";
+import type { NexusBootstrap, NexusContextCreate, NexusContextPack } from "../contracts.js";
 import type { NexusLayoutState } from "./layout-state.js";
 import type { NexusNavigationStore } from "./navigation.js";
 
@@ -10,6 +10,9 @@ export interface NexusAskContext {
   readonly module: string;
   readonly topic?: string;
   readonly range?: string;
+  readonly contextId?: string;
+  readonly resourceRefs?: readonly string[];
+  readonly goal?: string;
 }
 
 export interface NexusRecentSession {
@@ -28,6 +31,8 @@ export interface NexusPageProps {
   readonly navigate: (route: string) => void;
   readonly showConversation: () => void;
   readonly ask: (text: string, context?: NexusAskContext) => Promise<void>;
+  readonly addContext: (context: Omit<NexusContextCreate, "session_id">) => Promise<NexusContextPack>;
+  readonly removeContext: (contextId: string) => Promise<void>;
   readonly recentSessions?: readonly NexusRecentSession[];
   readonly continueSession?: (sessionId: string) => void;
 }

@@ -1,6 +1,6 @@
 import type { SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { useState } from "react";
-import type { CaptureDraft, DomainId, DomainSummary, NexusSearchResult, TodaySignal } from "../contracts.js";
+import type { CaptureDraft, DomainId, DomainSummary, NexusSearchResult, NexusSuggestion, SuggestionAction, TodaySignal } from "../contracts.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusModuleDescriptor, NexusPageProps } from "./contracts.js";
 
@@ -32,8 +32,58 @@ function SignalCard({ signal }: { readonly signal: TodaySignal }) {
   </article>;
 }
 
-export function TodayPage({ data, navigate, recentSessions = [], continueSession }: NexusPageProps) {
+function SuggestionCard({ suggestion, reload, addContext, ask }: {
+  readonly suggestion: NexusSuggestion;
+  readonly reload: () => Promise<void>;
+  readonly addContext: NexusPageProps["addContext"];
+  readonly ask: NexusPageProps["ask"];
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function feedback(action: Extract<SuggestionAction, "ignore" | "snooze" | "mute">) {
+    setBusy(true);
+    try {
+      await nexusJson(await fetch(nexusEndpoint("suggestions/action"), {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ suggestion, action })
+      }));
+      setError(undefined);
+      await reload();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "建议操作失败。"); }
+    finally { setBusy(false); }
+  }
+  async function discuss(createDraft: boolean) {
+    setBusy(true);
+    try {
+      const goal = createDraft ? `基于“${suggestion.title}”生成可审核的调整草稿` : `理解“${suggestion.title}”的依据`;
+      const context = await addContext({ source_domain: suggestion.domain, resource_refs: suggestion.evidence_refs, goal });
+      await ask(createDraft
+        ? `请根据“${suggestion.title}”的证据生成调整草稿；不要直接写入任何领域事实。`
+        : `请解释“${suggestion.title}”的证据、数据缺口和可采取的下一步。`, {
+        module: "suggestion", topic: suggestion.title, contextId: context.context_id,
+        resourceRefs: context.resource_refs, goal
+      });
+      setError(undefined);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "暂时无法打开建议上下文。"); }
+    finally { setBusy(false); }
+  }
+  return <article className="sn-suggestion" data-importance={suggestion.importance}>
+    <header><DomainMark domain={suggestion.domain} /><div><span>建议 · {suggestion.domain}</span><h3>{suggestion.title}</h3></div><em>{Math.round((suggestion.confidence ?? 0) * 100)}%</em></header>
+    <p>{suggestion.summary}</p><small>{suggestion.reason}</small>
+    {error !== undefined && <p className="sn-error">{error}</p>}
+    <footer>
+      {suggestion.allowed_actions.includes("view_evidence") && <button disabled={busy} type="button" onClick={() => { void discuss(false); }}>查看证据</button>}
+      {suggestion.allowed_actions.includes("create_draft") && <button className="sn-primary" disabled={busy} type="button" onClick={() => { void discuss(true); }}>创建调整草稿</button>}
+      {suggestion.allowed_actions.includes("snooze") && <button disabled={busy} type="button" onClick={() => { void feedback("snooze"); }}>稍后提醒</button>}
+      {suggestion.allowed_actions.includes("ignore") && <button disabled={busy} type="button" onClick={() => { void feedback("ignore"); }}>忽略本次</button>}
+      {suggestion.allowed_actions.includes("mute") && <button disabled={busy} type="button" onClick={() => { void feedback("mute"); }}>不再显示此类</button>}
+    </footer>
+  </article>;
+}
+
+export function TodayPage({ data, navigate, recentSessions = [], continueSession, reload, addContext, ask }: NexusPageProps) {
   const pending = data.drafts.filter((draft) => draft.state === "pending").length;
+  const suggestions = data.suggestions ?? [];
   return <div className="sn-page sn-page-today">
     <header className="sn-hero">
       <div><span className="sn-kicker">SHADOW / NOW</span><h1>{data.greeting}</h1><p>继续一件事，或者直接在下方告诉 Shadow 任何内容。</p></div>
@@ -46,6 +96,10 @@ export function TodayPage({ data, navigate, recentSessions = [], continueSession
     {recentSessions.length > 0 && <section className="sn-section sn-continue-section">
       <div className="sn-section-title"><div><span>继续</span><h2>回到最近的上下文</h2></div><small>DSH Session 只作为底层容器</small></div>
       <div className="sn-continue-list">{recentSessions.slice(0, 4).map((session) => <button type="button" key={session.id} data-current={session.current} onClick={() => continueSession?.(session.id)}><span>{session.current ? "当前" : "最近"}</span><strong>{session.title}</strong><em>继续对话</em></button>)}</div>
+    </section>}
+    {suggestions.length > 0 && <section className="sn-section">
+      <div className="sn-section-title"><div><span>可解释建议</span><h2>由领域事实生成，决定权仍在你</h2></div><small>{suggestions.length} 条</small></div>
+      <div className="sn-suggestion-list">{suggestions.map((suggestion) => <SuggestionCard key={suggestion.suggestion_id} suggestion={suggestion} reload={reload} addContext={addContext} ask={ask} />)}</div>
     </section>}
     <section className="sn-section">
       <div className="sn-section-title"><div><span>今日脉络</span><h2>值得留意的变化</h2></div><small>{data.signals.length} 条聚合信号</small></div>
@@ -174,7 +228,7 @@ export function ReviewPage({ data, sessions, reload }: NexusPageProps) {
   </div>;
 }
 
-export function SearchPage({ data }: NexusPageProps) {
+export function SearchPage({ data, addContext, ask }: NexusPageProps) {
   const [query, setQuery] = useState("");
   const [result, setResult] = useState<NexusSearchResult>();
   const [busy, setBusy] = useState(false);
@@ -195,11 +249,33 @@ export function SearchPage({ data }: NexusPageProps) {
       setError(caught instanceof Error ? caught.message : "搜索暂时不可用。");
     } finally { setBusy(false); }
   }
+  async function askAbout(item: NexusSearchResult["items"][number]) {
+    if (item.reference === undefined) return;
+    setBusy(true);
+    try {
+      const goal = `理解“${item.title}”并回答后续问题`;
+      const context = await addContext({
+        source_domain: item.domain,
+        resource_refs: [item.reference],
+        goal
+      });
+      await ask(`请先说明“${item.title}”最值得关注的内容。`, {
+        module: "search",
+        topic: item.title,
+        contextId: context.context_id,
+        resourceRefs: context.resource_refs,
+        goal
+      });
+      setError(undefined);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "无法把这个结果加入当前上下文。");
+    } finally { setBusy(false); }
+  }
   return <div className="sn-page sn-search-page">
     <header className="sn-page-header"><span>SEARCH / FEDERATED</span><h1>跨领域查找，事实仍留在原处。</h1><p>当前可搜索：{searchable.map((domain) => domain.label).join("、") || "尚无领域"}。Nexus 只返回摘要和稳定资源引用。</p></header>
     <form className="sn-search-box" onSubmit={(event) => { event.preventDefault(); void search(); }}><input value={query} maxLength={200} onChange={(event) => setQuery(event.target.value)} placeholder="搜索资料、证据和长期记忆" /><button className="sn-primary" type="submit" disabled={busy || query.trim() === ""}>{busy ? "搜索中…" : "搜索"}</button></form>
     {error !== undefined && <p className="sn-error">{error}</p>}
-    {result !== undefined && <section className="sn-search-results"><div className="sn-section-title"><div><span>结果</span><h2>{result.items.length} 条匹配</h2></div><small>{result.unavailableDomains.length > 0 ? `${result.unavailableDomains.length} 个领域暂不可用` : "所有可搜索领域已响应"}</small></div>{result.items.length === 0 ? <div className="sn-empty sn-empty-compact"><h2>没有找到匹配内容</h2></div> : result.items.map((item, index) => <article key={`${item.domain}:${item.reference ?? String(index)}`}><DomainMark domain={item.domain} /><div><span>{item.domainLabel}</span><h3>{item.title}</h3><p>{item.detail}</p>{item.reference !== undefined && <code>{item.reference}</code>}</div></article>)}</section>}
+    {result !== undefined && <section className="sn-search-results"><div className="sn-section-title"><div><span>结果</span><h2>{result.items.length} 条匹配</h2></div><small>{result.unavailableDomains.length > 0 ? `${result.unavailableDomains.length} 个领域暂不可用` : "所有可搜索领域已响应"}</small></div>{result.items.length === 0 ? <div className="sn-empty sn-empty-compact"><h2>没有找到匹配内容</h2></div> : result.items.map((item, index) => <article key={`${item.domain}:${item.reference ?? String(index)}`}><DomainMark domain={item.domain} /><div><span>{item.domainLabel}</span><h3>{item.title}</h3><p>{item.detail}</p>{item.reference !== undefined && <><code>{item.reference}</code><button type="button" disabled={busy} onClick={() => { void askAbout(item); }}>询问这个</button></>}</div></article>)}</section>}
   </div>;
 }
 
@@ -209,7 +285,7 @@ export function AppsPage({ data, navigate }: NexusPageProps) {
     : <a key={domain.id} href={domain.appUrl} target="_blank" rel="noreferrer"><DomainMark domain={domain.id} /><div><h2>{domain.label}</h2><p>{domain.caption}</p><span>{domain.status === "ready" ? "领域已连接" : "打开独立应用"}</span></div><em>打开 ↗</em></a>)}</div></div>;
 }
 
-function DomainPage({ data, showConversation, ask, domainId }: NexusPageProps & { readonly domainId: DomainId }) {
+function DomainPage({ data, showConversation, ask, addContext, domainId }: NexusPageProps & { readonly domainId: DomainId }) {
   const domain = data.domains.find((item) => item.id === domainId);
   const [asking, setAsking] = useState(false);
   const [askError, setAskError] = useState<string>();
@@ -218,8 +294,14 @@ function DomainPage({ data, showConversation, ask, domainId }: NexusPageProps & 
   async function discuss() {
     setAsking(true);
     try {
+      const goal = `理解 ${domainLabel} 最近值得关注的变化`;
+      const context = await addContext({
+        source_domain: domainId,
+        resource_refs: [`shadow://${domainId}/overview`],
+        goal
+      });
       const question = `结合已授权数据，和我聊聊 ${domainLabel} 最近值得关注的变化。`;
-      await ask(question, { module: domainId, topic: "overview", range: "30d" });
+      await ask(question, { module: domainId, topic: "overview", range: "30d", contextId: context.context_id, resourceRefs: context.resource_refs, goal });
       setAskError(undefined);
     } catch (caught) {
       setAskError(caught instanceof Error ? caught.message : "暂时无法发起对话。");

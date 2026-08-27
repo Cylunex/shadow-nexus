@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { CaptureDraft, DomainId, DomainSummary, NexusSearchResult, RiskLevel, TodaySignal } from "./contracts.js";
+import type { CaptureDraft, DomainId, DomainSummary, NexusSearchResult, NexusSuggestion, RiskLevel, TodaySignal } from "./contracts.js";
 import type { BootstrapProjection } from "./projection.js";
 
 export interface RuntimeOperation {
@@ -19,7 +19,7 @@ export interface RuntimeOperation {
 
 export interface RuntimeSurface {
   readonly id: string;
-  readonly type: "summary" | "capture" | "review" | "search" | "run-status" | "app-link" | "resource-link";
+  readonly type: "summary" | "suggestions" | "capture" | "review" | "search" | "run-status" | "app-link" | "resource-link";
   readonly capability?: string;
   readonly risk_level?: "L0" | "L1" | "L2" | "L3" | "L4";
   readonly intent_prefixes?: readonly string[];
@@ -115,6 +115,7 @@ export interface DomainGateway {
   readonly runtime: NexusRuntime;
   project(now?: Date): Promise<BootstrapProjection>;
   discoverDrafts(): Promise<readonly CaptureDraft[]>;
+  discoverSuggestions(): Promise<readonly NexusSuggestion[]>;
   search(query: string, limit?: number): Promise<NexusSearchResult>;
   createDraft(draft: CaptureDraft, actor?: string): Promise<string>;
   rejectDraft(draft: CaptureDraft): Promise<void>;
@@ -370,6 +371,26 @@ function reviewDraft(domain: RuntimeDomain, value: ReviewEnvelope): CaptureDraft
   };
 }
 
+function validSuggestion(value: NexusSuggestion, domain: string): boolean {
+  const actions = new Set(["ignore", "snooze", "mute", "create_draft", "view_evidence"]);
+  return value?.protocol === "shadow.suggestion.v1"
+    && value.domain === domain
+    && /^sug_[A-Za-z0-9_-]{8,128}$/u.test(value.suggestion_id)
+    && /^[a-z][a-z0-9-]*(?:\.[a-z][A-Za-z0-9-]*)+$/u.test(value.rule_id)
+    && typeof value.dedupe_key === "string" && value.dedupe_key.length <= 256
+    && typeof value.title === "string" && value.title.length > 0 && value.title.length <= 160
+    && typeof value.summary === "string" && value.summary.length > 0 && value.summary.length <= 1000
+    && typeof value.reason === "string" && value.reason.length > 0 && value.reason.length <= 2000
+    && Array.isArray(value.evidence_refs) && value.evidence_refs.length <= 32
+    && value.evidence_refs.every((item) => typeof item === "string" && item.startsWith("shadow://"))
+    && Array.isArray(value.allowed_actions) && value.allowed_actions.length > 0
+    && value.allowed_actions.every((item) => actions.has(item))
+    && Number.isFinite(Date.parse(value.created_at)) && Number.isFinite(Date.parse(value.valid_until))
+    && typeof value.data_freshness === "object" && value.data_freshness !== null
+    && Number.isFinite(value.data_freshness.missing_ratio)
+    && value.data_freshness.missing_ratio >= 0 && value.data_freshness.missing_ratio <= 1;
+}
+
 function receiptReference(domain: RuntimeDomain, reviewId: string, response: unknown): string {
   if (typeof response === "object" && response !== null) {
     for (const key of ["receipt", "reference"] as const) {
@@ -464,6 +485,20 @@ export class HttpDomainGateway implements DomainGateway {
       } catch { return []; }
     }));
     return discovered.flat().sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async discoverSuggestions(): Promise<readonly NexusSuggestion[]> {
+    const discovered = await Promise.all(this.runtime.domains.map(async (domain) => {
+      const surface = domain.surfaces.find((item) => item.type === "suggestions" && item.operation !== undefined);
+      const connection = domainConnection(domain);
+      if (surface?.operation === undefined || connection === undefined) return [];
+      try {
+        const result = await requestJson<{ readonly items?: readonly NexusSuggestion[] }>(connection, surface.operation, this.timeoutMs);
+        return (result.items ?? []).slice(0, 50).filter((item) => validSuggestion(item, domain.id));
+      } catch { return []; }
+    }));
+    return discovered.flat().filter((item) => Date.parse(item.valid_until) > Date.now())
+      .sort((left, right) => right.created_at.localeCompare(left.created_at));
   }
 
   async search(query: string, limit = 20): Promise<NexusSearchResult> {

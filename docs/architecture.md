@@ -47,6 +47,19 @@ or forwarded traffic; such requests cannot execute L3/L4 operations without a tr
 
 ## Unified interaction path
 
+### Context Pack and suggestions
+
+`shadow.context.v1` is the only cross-surface context envelope. Search results, domain overview actions,
+Archive rediscovery and Health weekly review add opaque `shadow://` references plus an explicit goal to the
+current Session. Packs expire after 24 hours, never copy domain source data, and do not widen the Agent's
+existing capability grants. The prompt names the pack and references so the user can see what is in scope.
+
+Domains may expose a compiled `suggestions` Surface returning `shadow.suggestion.v1`. Nexus validates the
+domain, evidence references, validity window, missing-data ratio and allowed actions before rendering. It
+stores only user feedback: ignore applies to one dedupe key, snooze hides it for 24 hours, and mute hides the
+same domain rule. “View evidence” or “create draft” first creates a Context Pack and starts an ordinary DSH
+turn; it never invokes a domain mutation directly.
+
 1. A user enters natural language and/or uploads assets in the persistent Composer.
 2. Assets first use the Shadow Asset upload path; the instruction and stable asset references are appended to the visible active DSH Session.
 3. Nexus waits for the completed DSH turn and validates its versioned `NexusIntentPlan`; prompt admission is never treated as completion.

@@ -4,6 +4,11 @@ Shadow Nexus is the root Web shell for the Shadow profile on DeepSeek Harness. I
 
 The current milestone includes a Host + Browser DSH plugin, a responsive root shell, visible Session identity and selection, one intent-aware Composer, unified Shadow Asset attachments, inline Proposal review, dock/full Conversation layouts, lightweight recent-Session continuation, URL-backed navigation, a client module registry, a federated global review queue, declarative cross-domain Search, and an Apps directory. Platform compiles the installed domains, connections and Surfaces into `shadow-nexus-runtime.json`; Nexus contains no built-in domain list, endpoint table or keyword router. The Composer waits for the completed DSH response, returns ordinary discussion directly, and only creates reviewable Proposals when the user intends to save facts. A single interaction can fan out to as many as 200 independent Proposals, including multiple items in one domain. The DSH model has read capabilities only; all domain writes remain behind model-hidden Host boundaries and the domain-owned `shadow.review.v1` protocol.
 
+Context Packs let Search, domain pages and suggestion cards place short-lived `shadow://` references into
+the active Session without copying domain facts. Compiled Health and Archive suggestion surfaces appear as
+explainable cards with evidence, freshness, and ignore/snooze/mute controls. Android Share can prefill the
+same Composer with text, links or one file, but never sends or writes automatically.
+
 The bundle disables the official `ui-layout` row and replaces it with the Nexus root. The official Conversation, tool, permission, attachment, workflow, and other feature plugins remain unchanged and render through the child slots owned by Nexus. Install this bundle in a dedicated `shadow` profile; retain the stock `web` profile as the recovery and upgrade-diagnostic surface.
 
 ## Development

@@ -4,7 +4,9 @@ import {
   type CaptureDraft,
   type DomainSummary,
   type NexusBootstrap,
+  type NexusContextPack,
   type NexusIntentPlan,
+  type NexusSuggestion,
   type RiskLevel,
   type TodaySignal
 } from "./contracts.js";
@@ -117,7 +119,9 @@ export function createBootstrap(
   drafts: readonly CaptureDraft[],
   now = new Date(),
   projection: BootstrapProjection = disconnectedProjection,
-  assetUploadEnabled = false
+  assetUploadEnabled = false,
+  contexts: readonly NexusContextPack[] = [],
+  suggestions: readonly NexusSuggestion[] = []
 ): NexusBootstrap {
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(now);
   const hour = now.getHours();
@@ -132,6 +136,8 @@ export function createBootstrap(
     signals: projection.signals,
     domains: projection.domains,
     drafts,
+    contexts,
+    suggestions,
     assetUpload: { enabled: assetUploadEnabled, maxFilesPerMessage: 8 }
   };
 }

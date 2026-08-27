@@ -48,6 +48,50 @@ export interface TodaySignal {
   readonly tone: "calm" | "focus" | "warning";
 }
 
+export interface NexusContextPack {
+  readonly protocol: "shadow.context.v1";
+  readonly context_id: string;
+  readonly session_id: string;
+  readonly source_domain: DomainId | null;
+  readonly resource_refs: readonly string[];
+  readonly time_range: { readonly start: string; readonly end: string } | null;
+  readonly goal: string | null;
+  readonly asset_refs: readonly string[];
+  readonly capability_grants: readonly string[];
+  readonly created_at: string;
+  readonly expires_at: string;
+}
+
+export interface NexusContextCreate {
+  readonly session_id: string;
+  readonly source_domain?: DomainId | null;
+  readonly resource_refs?: readonly string[];
+  readonly time_range?: { readonly start: string; readonly end: string } | null;
+  readonly goal?: string | null;
+  readonly asset_refs?: readonly string[];
+  readonly capability_grants?: readonly string[];
+}
+
+export type SuggestionAction = "ignore" | "snooze" | "mute" | "create_draft" | "view_evidence";
+
+export interface NexusSuggestion {
+  readonly protocol: "shadow.suggestion.v1";
+  readonly suggestion_id: string;
+  readonly domain: DomainId;
+  readonly rule_id: string;
+  readonly dedupe_key: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly reason: string;
+  readonly evidence_refs: readonly string[];
+  readonly importance: "low" | "normal" | "high" | "urgent";
+  readonly confidence: number | null;
+  readonly allowed_actions: readonly SuggestionAction[];
+  readonly created_at: string;
+  readonly valid_until: string;
+  readonly data_freshness: { readonly observed_at: string; readonly missing_ratio: number };
+}
+
 export interface CaptureDraft {
   readonly id: string;
   readonly captureGroupId?: string;
@@ -84,6 +128,8 @@ export interface NexusBootstrap {
   readonly signals: readonly TodaySignal[];
   readonly domains: readonly DomainSummary[];
   readonly drafts: readonly CaptureDraft[];
+  readonly contexts: readonly NexusContextPack[];
+  readonly suggestions: readonly NexusSuggestion[];
   readonly assetUpload: {
     readonly enabled: boolean;
     readonly maxFilesPerMessage: number;

@@ -12,6 +12,8 @@ const fallback: NexusBootstrap = {
   signals: [],
   domains: [],
   drafts: [],
+  contexts: [],
+  suggestions: [],
   assetUpload: { enabled: false, maxFilesPerMessage: 8 }
 };
 

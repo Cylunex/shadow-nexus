@@ -132,7 +132,10 @@ export async function submitNexus(
   const pageContext = context === undefined ? "" : `\n当前工作台上下文：\n${[
     `模块：${context.module}`,
     context.topic === undefined ? undefined : `主题：${context.topic}`,
-    context.range === undefined ? undefined : `范围：${context.range}`
+    context.range === undefined ? undefined : `范围：${context.range}`,
+    context.contextId === undefined ? undefined : `Context Pack：${context.contextId}`,
+    context.goal === undefined ? undefined : `当前目标：${context.goal}`,
+    context.resourceRefs === undefined || context.resourceRefs.length === 0 ? undefined : `资源引用：${context.resourceRefs.join("、")}`
   ].filter((line): line is string => line !== undefined).join("\n")}\n`;
   const attachmentContext = attachments.length === 0 ? "" : `\n\n附件已保存到 Shadow Asset，只能按需只读：\n${attachments.map((attachment, index) => [
     `${String(index + 1)}. ${attachment.filename} · ${attachment.contentType}`,
@@ -176,7 +179,10 @@ export async function askNexus(
   const pageContext = [
     `页面模块：${context.module}`,
     context.topic === undefined ? undefined : `讨论主题：${context.topic}`,
-    context.range === undefined ? undefined : `时间范围：${context.range}`
+    context.range === undefined ? undefined : `时间范围：${context.range}`,
+    context.contextId === undefined ? undefined : `Context Pack：${context.contextId}`,
+    context.goal === undefined ? undefined : `当前目标：${context.goal}`,
+    context.resourceRefs === undefined || context.resourceRefs.length === 0 ? undefined : `已选资源：${context.resourceRefs.join("、")}`
   ].filter((line): line is string => line !== undefined).join("\n");
   const attachmentContext = attachments.length === 0 ? "" : `\n\n用户附件（原件已统一保存到 Shadow Asset；本机路径只是供当前会话读取的只读副本）：\n${attachments.map((attachment, index) => [
     `${String(index + 1)}. ${attachment.filename} · ${attachment.contentType} · ${String(attachment.sizeBytes)} bytes`,
