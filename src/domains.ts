@@ -1,6 +1,7 @@
 import { createHash, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { CaptureDraft, DomainEntity, DomainId, DomainMetric, DomainSummary, EntityClass, EntitySensitivity, NexusQuickAction, NexusQuickActionField, NexusQuickActionRequest, NexusSearchResult, NexusSuggestion, RiskLevel, TodaySignal } from "./contracts.js";
+import { dirname, join } from "node:path";
+import type { CapabilityMaturity, CaptureDraft, DomainEntity, DomainId, DomainMetric, DomainSummary, EntityClass, EntitySensitivity, NexusCapabilityStatus, NexusQuickAction, NexusQuickActionField, NexusQuickActionRequest, NexusSearchResult, NexusSuggestion, RiskLevel, TodaySignal } from "./contracts.js";
 import type { BootstrapProjection } from "./projection.js";
 
 export interface RuntimeOperation {
@@ -140,6 +141,33 @@ export interface NexusRuntime {
   readonly domains: readonly RuntimeDomain[];
 }
 
+interface RuntimeCapabilityStage {
+  readonly status: "unknown" | "passed" | "failed" | "not_applicable";
+  readonly evidence_id?: string;
+  readonly detail?: string;
+}
+
+interface RuntimeCapability {
+  readonly capability_ref: string;
+  readonly plugin_id: string;
+  readonly instance_id: string;
+  readonly capability_id: string;
+  readonly selected: boolean;
+  readonly client_channels: readonly string[];
+  readonly maturity: CapabilityMaturity;
+  readonly stages: Readonly<Record<string, RuntimeCapabilityStage>>;
+}
+
+interface RuntimeCapabilityInventory {
+  readonly version: 1;
+  readonly protocol: "shadow.capability-status.v1";
+  readonly deployment_id: string;
+  readonly build_id: string;
+  readonly generated_at: string;
+  readonly summary: { readonly selected: number; readonly client: number; readonly deployed: number; readonly observed: number; readonly restore_tested: number; readonly failed: number };
+  readonly capabilities: readonly RuntimeCapability[];
+}
+
 interface DomainConnection {
   readonly baseUrl: string;
   readonly token: string;
@@ -165,11 +193,12 @@ interface ReviewEnvelope {
 }
 
 export class DomainGatewayError extends Error {
-  constructor(readonly status: number, message: string) { super(message); }
+  constructor(readonly status: number, message: string, readonly code?: string) { super(message); }
 }
 
 export interface DomainGateway {
   readonly runtime: NexusRuntime;
+  readonly capabilityStatus?: NexusCapabilityStatus;
   policyFor(draft: CaptureDraft): DraftExecutionPolicy;
   quickActionDraft(input: NexusQuickActionRequest, now?: Date): CaptureDraft;
   project(now?: Date): Promise<BootstrapProjection>;
@@ -186,6 +215,8 @@ export type NexusExecutionPolicy = "trusted" | "review-first";
 export interface DraftExecutionPolicy {
   readonly risk: RiskLevel;
   readonly mode: "automatic" | "review" | "prohibited";
+  readonly capabilityRef?: string;
+  readonly operationId?: string;
 }
 
 const emptyRuntime: NexusRuntime = {
@@ -362,6 +393,69 @@ export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_F
     ids.add(domain.id);
   }
   return candidate as NexusRuntime;
+}
+
+const unavailableCapabilityStatus: NexusCapabilityStatus = {
+  protocol: "unavailable", selected: 0, client: 0, deployed: 0, observed: 0, restoreTested: 0, failed: 0, attention: []
+};
+
+export function loadCapabilityStatus(
+  runtime: NexusRuntime,
+  path = environmentValue("SHADOW_CAPABILITY_STATUS_FILE")
+    ?? (environmentValue("SHADOW_NEXUS_RUNTIME_FILE") === undefined ? undefined : join(dirname(environmentValue("SHADOW_NEXUS_RUNTIME_FILE") as string), "shadow-capability-status.json"))
+): NexusCapabilityStatus {
+  if (path === undefined || runtime === emptyRuntime) return unavailableCapabilityStatus;
+  let parsed: unknown;
+  try { parsed = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) {
+    if (environmentValue("SHADOW_CAPABILITY_STATUS_FILE") === undefined && (error as NodeJS.ErrnoException).code === "ENOENT") return unavailableCapabilityStatus;
+    throw new DomainGatewayError(500, "Capability Status 投影无法读取。");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw new DomainGatewayError(500, "Capability Status 投影无效。");
+  const inventory = parsed as Partial<RuntimeCapabilityInventory>;
+  if (inventory.version !== 1 || inventory.protocol !== "shadow.capability-status.v1"
+    || inventory.deployment_id !== runtime.deployment_id || inventory.build_id !== runtime.build_id
+    || typeof inventory.generated_at !== "string" || !Array.isArray(inventory.capabilities)) {
+    throw new DomainGatewayError(500, "Capability Status 与 Nexus 运行时构建不匹配。");
+  }
+  const maturities = new Set<CapabilityMaturity>(["not-selected", "none", "contract", "client", "deployed", "observed", "restore-tested", "failed"]);
+  const stages = new Set(["contract", "client", "deployed", "observed", "restore_tested"]);
+  for (const value of inventory.capabilities as readonly unknown[]) {
+    if (typeof value !== "object" || value === null) throw new DomainGatewayError(500, "Capability Status 能力项无效。");
+    const item = value as Partial<RuntimeCapability>;
+    if (typeof item.capability_ref !== "string" || !item.capability_ref.startsWith("shadow://capabilities/")
+      || typeof item.selected !== "boolean" || !Array.isArray(item.client_channels)
+      || item.client_channels.some((channel) => typeof channel !== "string")
+      || !maturities.has(item.maturity as CapabilityMaturity)
+      || typeof item.stages !== "object" || item.stages === null
+      || [...stages].some((stage) => typeof item.stages?.[stage] !== "object" || item.stages[stage] === null)) {
+      throw new DomainGatewayError(500, "Capability Status 能力项无效。");
+    }
+  }
+  const selected = inventory.capabilities.filter((item) => item.selected && item.client_channels.includes("nexus"));
+  const passed = (item: RuntimeCapability, stage: string) => item.stages?.[stage]?.status === "passed";
+  const attention = selected.flatMap((item) => {
+    const failed = (Object.values(item.stages) as RuntimeCapabilityStage[]).find((stage) => stage.status === "failed");
+    if (item.maturity !== "failed" && failed === undefined) return [];
+    return [{
+      capabilityRef: item.capability_ref,
+      maturity: "failed" as const,
+      detail: failed?.detail ?? "能力证据明确标记为失败。",
+      ...(failed?.evidence_id === undefined ? {} : { evidenceId: failed.evidence_id })
+    }];
+  }).slice(0, 20);
+  return {
+    protocol: "shadow.capability-status.v1",
+    buildId: runtime.build_id,
+    generatedAt: inventory.generated_at,
+    selected: selected.length,
+    client: selected.filter((item) => passed(item, "client")).length,
+    deployed: selected.filter((item) => passed(item, "deployed")).length,
+    observed: selected.filter((item) => passed(item, "observed")).length,
+    restoreTested: selected.filter((item) => passed(item, "restore_tested")).length,
+    failed: attention.length,
+    attention
+  };
 }
 
 function domainConnection(domain: RuntimeDomain): DomainConnection | undefined {
@@ -559,18 +653,20 @@ async function requestJson<T>(connection: DomainConnection, operation: RuntimeOp
       signal: AbortSignal.timeout(timeoutMs)
     });
   } catch {
-    throw new DomainGatewayError(503, "领域服务暂时不可用。");
+    throw new DomainGatewayError(503, "领域服务暂时不可用。", "domain-unavailable");
   }
   let value: unknown;
   try { value = await response.json(); }
-  catch { throw new DomainGatewayError(502, "领域服务返回了无效响应。"); }
+  catch { throw new DomainGatewayError(502, "领域服务返回了无效响应。", "domain-invalid-response"); }
   if (!response.ok) {
     const upstream = typeof value === "object" && value !== null && "detail" in value
       ? String((value as { readonly detail?: unknown }).detail ?? "") : "";
     const message = response.status === 401 || response.status === 403
       ? "领域连接没有执行此操作的权限。"
       : response.status >= 500 ? "领域服务暂时不可用。" : upstream || "领域服务拒绝了这条 Proposal。";
-    throw new DomainGatewayError(response.status >= 500 ? 503 : 422, message);
+    const code = response.status === 401 || response.status === 403
+      ? "domain-permission-denied" : response.status >= 500 ? "domain-unavailable" : "domain-validation-rejected";
+    throw new DomainGatewayError(response.status >= 500 ? 503 : response.status === 401 || response.status === 403 ? response.status : 422, message, code);
   }
   return value as T;
 }
@@ -686,7 +782,8 @@ function reviewDraft(domain: RuntimeDomain, value: ReviewEnvelope): CaptureDraft
     domainRevision: value.revision,
     domainReviewId: value.review_id,
     confirmable: true,
-    sourceRefs: value.source_refs
+    sourceRefs: value.source_refs,
+    traceId: value.trace_id
   };
 }
 
@@ -785,12 +882,14 @@ function receiptReference(domain: RuntimeDomain, reviewId: string, response: unk
 
 export class HttpDomainGateway implements DomainGateway {
   readonly runtime: NexusRuntime;
+  readonly capabilityStatus: NexusCapabilityStatus;
 
   constructor(
     private readonly timeoutMs = 4_000,
     runtime = loadNexusRuntime(),
-    private readonly executionPolicy = configuredExecutionPolicy()
-  ) { this.runtime = runtime; }
+    private readonly executionPolicy = configuredExecutionPolicy(),
+    capabilityStatus = loadCapabilityStatus(runtime)
+  ) { this.runtime = runtime; this.capabilityStatus = capabilityStatus; }
 
   policyFor(draft: CaptureDraft): DraftExecutionPolicy {
     const domain = this.runtime.domains.find((item) => item.id === draft.domain);
@@ -806,9 +905,14 @@ export class HttpDomainGateway implements DomainGateway {
     ]);
     const effectiveRisk = Math.max(runtimeRiskRank[declared], modelRiskRank[draft.risk]);
     const risk: RiskLevel = effectiveRisk >= 3 ? "high" : effectiveRisk >= 2 ? "medium" : "low";
-    if (declared === "L4") return { risk, mode: "prohibited" };
-    if (this.executionPolicy === "review-first" || effectiveRisk >= 3) return { risk, mode: "review" };
-    return { risk, mode: "automatic" };
+    const operation = domain.review?.operations.commit ?? capture?.operation;
+    const metadata = operation === undefined ? {} : {
+      capabilityRef: `shadow://capabilities/${domain.plugin_id}/${domain.instance_id}/${operation.capability_id}`,
+      operationId: operation.operation_id
+    };
+    if (declared === "L4") return { risk, mode: "prohibited", ...metadata };
+    if (this.executionPolicy === "review-first" || effectiveRisk >= 3) return { risk, mode: "review", ...metadata };
+    return { risk, mode: "automatic", ...metadata };
   }
 
   quickActionDraft(input: NexusQuickActionRequest, now = new Date()): CaptureDraft {
@@ -908,7 +1012,7 @@ export class HttpDomainGateway implements DomainGateway {
         connected += 1;
       } catch { domains.push(base); }
     }
-    return { mode: connected > 0 ? "connected" : "preview", domains: domains.sort((left, right) => left.order - right.order), signals };
+    return { mode: connected > 0 ? "connected" : "preview", domains: domains.sort((left, right) => left.order - right.order), signals, capabilities: this.capabilityStatus };
   }
 
   async discoverDrafts(): Promise<readonly CaptureDraft[]> {

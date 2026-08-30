@@ -22,7 +22,8 @@ import {
 
 function proposal(sessionId = "session-a") {
   return createAnalyzedDrafts(sessionId, "保存这条记录", {
-    version: 2,
+    protocol: "shadow.nexus.plan.v1",
+    version: 3,
     interactionId: "interaction_12345678-abcd",
     route: "propose",
     response: "已生成待确认 Proposal。",
@@ -32,7 +33,8 @@ function proposal(sessionId = "session-a") {
       summary: "Alpha Proposal",
       risk: "medium",
       fields: { source_uri: "https://example.test", nestedJson: "[{\"value\":1}]" }
-    }]
+    }],
+    contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame" }
   }, new Date("2026-08-26T08:00:00Z"), [], new Set(["alpha"]))[0];
 }
 
@@ -47,11 +49,13 @@ test("uses completed DSH analysis and installed projection as the only routing a
   assert.equal(draft.domain, "alpha");
   assert.equal(draft.fields.source_uri, "https://example.test");
   assert.throws(() => createAnalyzedDrafts("session-a", "x", {
-    version: 2,
+    protocol: "shadow.nexus.plan.v1",
+    version: 3,
     interactionId: "interaction_unknown-1234",
     route: "propose",
     response: "x",
-    drafts: [{ domain: "missing", intent: "missing.record", summary: "x", risk: "low", fields: {} }]
+    drafts: [{ domain: "missing", intent: "missing.record", summary: "x", risk: "low", fields: {} }],
+    contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame" }
   }, new Date(), [], new Set(["alpha"])), /未安装/u);
   assert.throws(() => createDraft(), /关键词路由已停用/u);
   assert.throws(() => createDrafts(), /关键词路由已停用/u);
@@ -173,7 +177,11 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
   let commits = 0;
   const domains = {
     runtime: { domains: [{ id: "alpha" }] },
-    policyFor: () => ({ risk: "medium", mode: "automatic" }),
+    policyFor: () => ({
+      risk: "medium", mode: "automatic",
+      capabilityRef: "shadow://capabilities/shadow-alpha/alpha-test/alpha.records.write",
+      operationId: "commit_alpha_review"
+    }),
     quickActionDraft: ({ sessionId = "quick-action:alpha", fields }) => ({
       ...proposal(), id: "quick-alpha", captureGroupId: "quick-alpha", sessionId,
       text: "快捷记录", summary: "快捷记录", fields: { value: fields.value }, risk: "medium"
@@ -203,11 +211,13 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
       sessionId: "session-a",
       text: "保存这条记录",
       analysis: {
-        version: 2,
+        protocol: "shadow.nexus.plan.v1",
+        version: 3,
         interactionId: "interaction_auto-12345678",
         route: "propose",
         response: "已处理。",
-        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "自动处理", risk: "low", fields: { value: "1" } }]
+        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "自动处理", risk: "low", fields: { value: "1" } }],
+        contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame", provider: "test" }
       }
     })
   });
@@ -218,6 +228,9 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
   assert.equal(result.risk, "medium");
   assert.equal(result.decisionMode, "automatic");
   assert.equal(result.receipt, "shadow://alpha/records/automatic");
+  assert.equal(result.capabilityRef, "shadow://capabilities/shadow-alpha/alpha-test/alpha.records.write");
+  assert.equal(result.correlationId, result.captureGroupId);
+  assert.equal(result.idempotencyKey, result.id);
   assert.equal(state.drafts.get(result.id)?.receipt, result.receipt);
 
   const quickResponse = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/quick-actions/execute`, {
@@ -238,11 +251,13 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
       sessionId: "session-a",
       text: "保存另一条记录",
       analysis: {
-        version: 2,
+        protocol: "shadow.nexus.plan.v1",
+        version: 3,
         interactionId: "interaction_fail-12345678",
         route: "propose",
         response: "稍后复核。",
-        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "自动失败", risk: "low", fields: { value: "2" } }]
+        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "自动失败", risk: "low", fields: { value: "2" } }],
+        contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame", provider: "test" }
       }
     })
   });
@@ -251,6 +266,23 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
   assert.equal(failed.state, "pending");
   assert.equal(failed.reviewReason, "execution-failed");
   assert.equal(failed.executionError, "领域暂时不可用。");
+  assert.equal(failed.failureCode, "unexpected-execution-failure");
+
+  const beforeInvalid = commits;
+  const invalidResponse = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/capture`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "session-a", text: "不要执行畸形计划", analysis: {
+        protocol: "shadow.nexus.plan.v1", version: 3, interactionId: "interaction_invalid-12345678",
+        route: "propose", response: "x", injected: true,
+        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "不应执行", risk: "low", fields: { value: "9" } }],
+        contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame" }
+      }
+    })
+  });
+  assert.equal(invalidResponse.status, 422);
+  assert.equal(commits, beforeInvalid);
 });
 
 test("accepts same-origin JSON and rejects cross-site requests", () => {

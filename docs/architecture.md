@@ -35,12 +35,18 @@ Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Dashboar
 
 ## Cross-domain dashboard
 
-The default `view=today` route is a read-model dashboard, not a new domain. It combines connection state,
-up to eight runtime-declared metrics per Summary Surface, current suggestions, aggregate signals and recent
-Proposal receipts. The browser receives only those display fields; raw Summary responses remain inside the
-Host. A domain with no multi-metric declaration still renders its primary metric, and an unavailable domain
-degrades independently without hiding other projects. Adding or removing a domain changes the compiled
-runtime projection rather than the Nexus UI source.
+The default `view=today` route is a quiet read-model dashboard, not a new domain or a metric wall. It orders
+failed automation, high-impact review, explicit capability-evidence failures and entity attention first; then
+shows at most six relevant entities, four common actions, three suggestions and four recent receipt outcomes.
+Domain cards remain a deeper navigation layer. The browser receives only declared display fields and bounded
+execution metadata; raw Summary responses remain inside the Host. An unavailable domain degrades independently
+without hiding other projects. Adding or removing a domain changes the compiled runtime projection rather than
+the Nexus UI source.
+
+When present beside the runtime projection, `shadow-capability-status.json` must match the same deployment and
+build. Nexus keeps `client`, `deployed`, `observed` and `restore-tested` stages separate, surfaces only explicit
+failed evidence as an interruption, and leaves missing evidence unknown. Capability references use Platform's
+stable `shadow://capabilities/<plugin>/<instance>/<capability>` form.
 
 Installed domain UI code must enter through a trusted DSH Client plugin. A domain manifest may describe a Surface but never names remotely executed JavaScript.
 
@@ -71,11 +77,16 @@ turn; it never invokes a domain mutation directly.
 
 1. A user enters natural language and/or uploads assets in the persistent Composer.
 2. Assets first use the Shadow Asset upload path; the instruction and stable asset references are appended to the visible active DSH Session.
-3. Nexus waits for the completed DSH turn and validates its versioned `NexusIntentPlan`; prompt admission is never treated as completion.
+3. Nexus waits for the completed DSH turn and validates its versioned `shadow.nexus.plan.v1`; prompt admission is never treated as completion. A structured `shadow_nexus_plan` tool-call block is preferred when available. Otherwise the entire assistant output must be one exact JSON frame; Nexus does not search arbitrary prose for a JSON substring.
 4. A read-only discussion returns inline with no Proposal. An explicit fact-saving intent produces one or more inline Proposals; `/ask` and `/record` are optional routing overrides, not separate modes.
 5. The DSH result, rather than local keyword rules, decides the domain fan-out and review fields. A batch may contain up to 200 independent proposals and may repeat a domain.
 6. Nexus links equivalent pending Nexus and domain Proposals by stable declared fields. The domain URI and Revision win for confirmation, while every source reference remains attached for audit.
 7. A model-hidden Host adapter validates the risk against the compiled Platform projection. In the default trusted policy it commits L0-L2 work automatically, stores the canonical receipt, and keeps the result for review. L3 waits for explicit confirmation; L4 is prohibited. Failed automatic execution remains as a retryable review exception.
+
+The Host revalidates exact keys, route/draft consistency, identifiers, field bounds and contract provenance before
+creating any Proposal. Missing or malformed output becomes an answer-only or clarification result with no drafts;
+an explicit `/record` never silently claims success. Legacy tagged envelopes are accepted only through the same
+strict validator and are recorded as `legacy-envelope` provenance for migration visibility.
 
 The interaction prompt permits read-only tools and read-only access to uploaded asset paths. It forbids every domain mutation. A writable domain uses a two-call transaction: create an auditable pending review, then commit that exact review through its hidden Host boundary when policy allows. The unified DSH Profile selects only read/analysis capabilities; draft and formal-write capabilities are not exposed to the model.
 
@@ -110,9 +121,14 @@ Domain plugins may raise a level but may not lower the platform minimum. The mod
 - Only a domain receipt proves a successful commit.
 - Retries reuse an idempotency key derived from the capture event and target capability.
 - Partial cross-domain workflows expose per-step receipts; successful steps are not hidden by a later failure.
+- Activity entries retain bounded capability, correlation, idempotency, trace and failure-class metadata so a receipt or exception can be followed across services without copying domain payloads.
 - Nexus may cache projections, but a domain read always wins on conflict.
 - Secrets and production endpoints are supplied by the deployed Shadow Platform configuration, never by a domain manifest committed to Git.
 
 ## DSH version boundary
+
+Remote Shadow App pages use only schema v1 `ShadowNativeBridge.request(capability, operation, payload)` Promises.
+Nexus checks `moduleId=nexus` and the declared capability list before capture, brief, offline queue or settings
+operations. Missing, stale or foreign bridges are a safe no-op; synchronous `ShellBridge` is not used by the remote page.
 
 The implementation targets DSH `0.1.1-rc.2` exactly. It relies on documented root/Conversation slots and the public `layout` service shape; it does not inspect Conversation DOM. Build, slot-topology tests, and native Shadow-profile smoke tests must run before changing the DSH version.

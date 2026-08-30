@@ -1,8 +1,9 @@
 import type { SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { useState } from "react";
-import type { ActivityEntry, CaptureDraft, DomainEntity, DomainId, DomainMetric, DomainSummary, NexusMemory, NexusPreferences, NexusQuickAction, NexusQuickActionField, NexusSearchResult, NexusSuggestion, SuggestionAction, TodaySignal } from "../contracts.js";
+import type { ActivityEntry, CaptureDraft, DomainEntity, DomainId, DomainMetric, DomainSummary, NexusMemory, NexusPreferences, NexusQuickAction, NexusQuickActionField, NexusSearchResult, NexusSuggestion, SuggestionAction } from "../contracts.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusModuleDescriptor, NexusPageProps } from "./contracts.js";
+import { bridgeCan, readShadowNativeBridge, requestNative } from "./native-bridge.js";
 
 function StatusDot({ status }: { readonly status: DomainSummary["status"] }) {
   return <span className="sn-status" data-status={status} title={status} />;
@@ -24,14 +25,6 @@ function displayFieldValue(value: string): string {
   return value;
 }
 
-function SignalCard({ signal }: { readonly signal: TodaySignal }) {
-  return <article className="sn-signal" data-tone={signal.tone}>
-    <div className="sn-signal-top"><DomainMark domain={signal.domain} /><span>{signal.eyebrow}</span><time>{signal.time}</time></div>
-    <h3>{signal.title}</h3>
-    <p>{signal.detail}</p>
-  </article>;
-}
-
 function SuggestionCard({ suggestion, reload, addContext, ask }: {
   readonly suggestion: NexusSuggestion;
   readonly reload: () => Promise<void>;
@@ -40,6 +33,7 @@ function SuggestionCard({ suggestion, reload, addContext, ask }: {
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
   async function feedback(action: Extract<SuggestionAction, "ignore" | "snooze" | "mute">) {
     setBusy(true);
     try {
@@ -48,7 +42,8 @@ function SuggestionCard({ suggestion, reload, addContext, ask }: {
         body: JSON.stringify({ suggestion, action })
       }));
       setError(undefined);
-      await reload();
+      setNotice(action === "snooze" ? "已回执：24 小时后再提醒" : action === "mute" ? "已回执：同类建议已静音" : "已回执：本次建议已忽略");
+      window.setTimeout(() => { void reload(); }, 1_500);
     } catch (caught) { setError(caught instanceof Error ? caught.message : "建议操作失败。"); }
     finally { setBusy(false); }
   }
@@ -64,12 +59,14 @@ function SuggestionCard({ suggestion, reload, addContext, ask }: {
         resourceRefs: context.resource_refs, goal
       });
       setError(undefined);
+      setNotice(createDraft ? "证据上下文已交给会话；草稿仍需通过 Nexus 执行边界。" : "证据上下文已添加到当前会话。");
     } catch (caught) { setError(caught instanceof Error ? caught.message : "暂时无法打开建议上下文。"); }
     finally { setBusy(false); }
   }
   return <article className="sn-suggestion" data-importance={suggestion.importance}>
-    <header><DomainMark domain={suggestion.domain} /><div><span>建议 · {suggestion.domain}</span><h3>{suggestion.title}</h3></div><em>{Math.round((suggestion.confidence ?? 0) * 100)}%</em></header>
-    <p>{suggestion.summary}</p><small>{suggestion.reason}</small>
+    <header><DomainMark domain={suggestion.domain} /><div><span>建议 · {suggestion.domain}</span><h3>{suggestion.title}</h3></div><em>{suggestion.confidence === null ? "有证据" : `${String(Math.round(suggestion.confidence * 100))}%`}</em></header>
+    <p>{suggestion.summary}</p><small>显示原因：{suggestion.reason}</small>
+    {notice !== undefined && <p className="sn-action-notice" role="status">✓ {notice}</p>}
     {error !== undefined && <p className="sn-error">{error}</p>}
     <footer>
       {suggestion.allowed_actions.includes("view_evidence") && <button disabled={busy} type="button" onClick={() => { void discuss(false); }}>查看证据</button>}
@@ -92,7 +89,7 @@ function sameLocalDay(value: string, reference: string): boolean {
 
 function domainMetrics(domain: DomainSummary): readonly DomainMetric[] {
   return domain.metrics?.length
-    ? domain.metrics.slice(0, 4)
+    ? domain.metrics.slice(0, 2)
     : [{ id: "primary", label: "当前", value: domain.metric, detail: domain.detail }];
 }
 
@@ -151,16 +148,18 @@ function QuickActionCard({ action, domain, sessionId, reload }: {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ domain: action.domain, actionId: action.id, fields: values, ...(sessionId === undefined ? {} : { sessionId }) })
       }));
-      setOutcome(draft.state === "approved" ? action.successMessage : draft.reviewReason === "execution-failed" ? "自动执行失败，已转入复核。" : "已进入待复核队列。");
+      setOutcome(draft.state === "approved"
+        ? `${action.successMessage}${draft.receipt === undefined ? "" : ` · 回执 ${draft.receipt}`}${draft.correlationId === undefined ? "" : ` · 关联 ${draft.correlationId}`}`
+        : draft.reviewReason === "execution-failed" ? `自动执行失败，已转入复核${draft.failureCode === undefined ? "。" : `（${draft.failureCode}）。`}` : "已进入待复核队列。");
       setError(undefined);
       await reload();
     } catch (caught) {
-      const shell = (globalThis as typeof globalThis & { readonly ShellBridge?: { enqueueOfflineAction?(value: string): string } }).ShellBridge;
-      if (caught instanceof TypeError && shell?.enqueueOfflineAction !== undefined) {
+      const bridge = readShadowNativeBridge();
+      if (caught instanceof TypeError && bridgeCan(bridge, "operations")) {
         try {
-          const queuedId = shell.enqueueOfflineAction(JSON.stringify({ sessionId, domain: action.domain, actionId: action.id, fields: values }));
-          if (queuedId === "") throw new Error("queue rejected");
-          setOutcome(`网络不可用，已加密排队（${queuedId}）`); setError(undefined);
+          const queued = await requestNative<{ readonly id?: string }>(bridge, "operations", "offline.enqueue", { action: { sessionId, domain: action.domain, actionId: action.id, fields: values } });
+          if (typeof queued.id !== "string" || queued.id === "") throw new Error("queue rejected");
+          setOutcome(`网络不可用，已加密排队（${queued.id}）`); setError(undefined);
         } catch { setError("离线动作无法安全排队。"); setOutcome(undefined); }
       } else { setError(caught instanceof Error ? caught.message : "快捷动作执行失败。"); setOutcome(undefined); }
     } finally { setBusy(false); }
@@ -173,7 +172,7 @@ function QuickActionCard({ action, domain, sessionId, reload }: {
       <div className="sn-quick-fields">{visibleFields.map((field) => <label key={field.id}><span>{field.label}{field.unit === undefined ? "" : ` · ${field.unit}`}</span>{field.type === "select"
         ? <select value={values[field.id] ?? ""} required={field.required} onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))}>{!field.required && <option value="">不填写</option>}{field.options?.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
         : <input type={field.type === "decimal" || field.type === "integer" ? "number" : field.type === "datetime" ? "datetime-local" : field.type} value={values[field.id] ?? ""} required={field.required} placeholder={field.placeholder} min={field.minimum} max={field.maximum} step={field.step} maxLength={field.maxLength} onChange={(event) => setValues((current) => ({ ...current, [field.id]: event.target.value }))} />}</label>)}</div>
-      <footer><span>{action.risk === "high" ? "高影响操作仍需明确复核" : "提交后由领域校验并保留回执"}</span><button className="sn-primary" type="submit" disabled={busy}>{busy ? "处理中…" : action.submitLabel}</button></footer>
+      <footer><span>{action.risk === "high" ? "L3 高影响操作需明确复核" : "L0–L2 默认自动执行，由领域校验并留回执"}</span><button className="sn-primary" type="submit" disabled={busy}>{busy ? "处理中…" : action.submitLabel}</button></footer>
       {outcome !== undefined && <p className="sn-quick-outcome">✓ {outcome}</p>}
       {error !== undefined && <p className="sn-error">{error}</p>}
     </form>}
@@ -183,45 +182,44 @@ function QuickActionCard({ action, domain, sessionId, reload }: {
 export function TodayPage({ sessionId, data, navigate, recentSessions = [], continueSession, reload, addContext, ask }: NexusPageProps) {
   const pending = data.drafts.filter((draft) => draft.state === "pending").length;
   const exceptions = data.activity.filter((entry) => entry.reviewRequired || entry.status === "prohibited").slice(0, 4);
-  const suggestions = data.suggestions ?? [];
-  const connected = data.domains.filter((domain) => domain.status === "ready").length;
+  const suggestions = (data.suggestions ?? []).slice(0, 3);
+  const capabilityAlerts = data.capabilities.attention.slice(0, 2);
   const automaticToday = data.drafts.filter((draft) => draft.state === "approved" && draft.decisionMode === "automatic"
     && sameLocalDay(draft.updatedAt ?? draft.createdAt, data.generatedAt)).length;
-  const recentActivity = data.drafts.filter((draft) => draft.state !== "pending")
-    .toSorted((left, right) => (right.updatedAt ?? right.createdAt).localeCompare(left.updatedAt ?? left.createdAt)).slice(0, 6);
+  const recentActivity = data.activity.filter((entry) => entry.status !== "pending").slice(0, 4);
   const generatedTime = new Date(data.generatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
   const quickActions = data.domains.flatMap((domain) => (domain.quickActions ?? []).map((action) => ({ action, domain })))
     .toSorted((left, right) => left.action.order - right.action.order || left.domain.order - right.domain.order);
   const entities = data.domains.flatMap((domain) => (domain.entities ?? []).map((entity) => ({ entity, domain })))
     .toSorted((left, right) => {
       const availability = { stale: 0, fresh: 1, unavailable: 2 } as const;
-      return availability[left.entity.availability] - availability[right.entity.availability]
+      return Number(right.entity.attention !== undefined) - Number(left.entity.attention !== undefined)
+        || availability[left.entity.availability] - availability[right.entity.availability]
         || left.entity.order - right.entity.order || left.domain.order - right.domain.order;
     });
   const entityAlerts = entities.filter(({ entity }) => entity.attention !== undefined).slice(0, 4);
   return <div className="sn-page sn-page-today">
     <header className="sn-hero sn-dashboard-hero">
-      <div><span className="sn-kicker">SHADOW / DASHBOARD</span><h1>常用信息，都在这里。</h1><p>各领域项目继续保管事实；Nexus 只聚合已声明的摘要、建议和执行回执。</p></div>
+      <div><span className="sn-kicker">SHADOW / TODAY</span><h1>先看需要你的，再继续今天。</h1><p>首页只保留例外、可立即行动的上下文和可验证回执；领域事实仍由各应用保管。</p></div>
       <div className="sn-date"><strong>{data.dateLabel}</strong><span>{data.mode === "connected" ? `最近聚合 ${generatedTime}` : "等待领域接入"}</span><button type="button" onClick={() => { void reload(); }}>刷新数据</button></div>
     </header>
-    <section className="sn-dashboard-stats" aria-label="数据面板概览">
-      <article><span>领域在线</span><strong>{connected}<small> / {data.domains.length}</small></strong><p>只读连接状态</p></article>
-      <article data-tone={pending > 0 ? "attention" : "calm"}><span>待你复核</span><strong>{pending}</strong><p>仅高影响与例外</p></article>
+    <section className="sn-dashboard-stats" aria-label="今日概览">
+      <article data-tone={pending + data.capabilities.failed > 0 ? "attention" : "calm"}><span>需要你</span><strong>{pending + data.capabilities.failed}</strong><p>高影响、失败或能力证据异常</p></article>
       <article><span>Agent 今日完成</span><strong>{automaticToday}</strong><p>均保留领域回执</p></article>
-      <article data-tone={suggestions.length > 0 ? "attention" : "calm"}><span>有效建议</span><strong>{suggestions.length}</strong><p>可查看证据与处理</p></article>
+      <article data-tone={data.capabilities.failed > 0 ? "attention" : "calm"}><span>运行证据</span><strong>{data.capabilities.protocol === "unavailable" ? "—" : `${String(data.capabilities.observed)}/${String(data.capabilities.selected)}`}</strong><p>{data.capabilities.protocol === "unavailable" ? "未加载 Platform 状态投影" : "observed 与 selected 分开记录"}</p></article>
     </section>
     {data.brief !== null && <section className="sn-brief" data-severity={data.brief.severity}><div><span>主动简报 · {data.preferences.briefCadence === "weekly" ? "每周" : "每日"}</span><h2>{data.brief.title}</h2><p>{data.brief.body}</p></div><em>{data.brief.notify ? "已允许原生提醒" : "仅在首页展示"}</em></section>}
-    {exceptions.length + entityAlerts.length > 0 && <section className="sn-section sn-attention-section">
+    {exceptions.length + entityAlerts.length + capabilityAlerts.length > 0 && <section className="sn-section sn-attention-section">
       <div className="sn-section-title"><div><span>需要你</span><h2>只有例外和高影响操作打断你</h2></div><button type="button" onClick={() => navigate("review")}>进入复核</button></div>
-      <div className="sn-attention-list">{exceptions.map((entry) => <button type="button" key={entry.id} onClick={() => navigate("review")}><DomainMark domain={entry.domain} /><div><strong>{entry.title}</strong><span>{entry.detail}</span></div><em>{entry.status === "failed" ? "自动执行失败" : entry.status === "prohibited" ? "策略已阻止" : "等待决定"}</em></button>)}{entityAlerts.map(({ entity }) => <button type="button" key={`${entity.domain}:${entity.id}:${entity.attention?.ruleId}`} onClick={() => entity.actionIds.length > 0 ? focusQuickAction(entity) : navigate(entity.domain)}><DomainMark domain={entity.domain} /><div><strong>{entity.label}</strong><span>{entity.attention?.message}</span></div><em>{entity.attention?.severity === "warning" ? "重要提醒" : "需要关注"}</em></button>)}</div>
+      <div className="sn-attention-list">{exceptions.map((entry) => <button type="button" key={entry.id} onClick={() => navigate("review")}><DomainMark domain={entry.domain} /><div><strong>{entry.title}</strong><span>显示原因：{entry.detail}</span></div><em>{entry.status === "failed" ? "自动执行失败" : entry.status === "prohibited" ? "策略已阻止" : "等待决定"}</em></button>)}{capabilityAlerts.map((item) => <button type="button" key={item.capabilityRef} onClick={() => navigate("trust")}><DomainMark domain="platform" /><div><strong>{item.capabilityRef.split("/").at(-1)}</strong><span>显示原因：{item.detail}</span></div><em>能力证据失败</em></button>)}{entityAlerts.map(({ entity }) => <button type="button" key={`${entity.domain}:${entity.id}:${entity.attention?.ruleId}`} onClick={() => entity.actionIds.length > 0 ? focusQuickAction(entity) : navigate(entity.domain)}><DomainMark domain={entity.domain} /><div><strong>{entity.label}</strong><span>显示原因：{entity.attention?.message}</span></div><em>{entity.attention?.severity === "warning" ? "重要提醒" : "需要关注"}</em></button>)}</div>
     </section>}
     {entities.length > 0 && <section className="sn-section sn-entity-section">
-      <div className="sn-section-title"><div><span>现在</span><h2>稳定实体，不再只是零散指标</h2></div><small>{entities.filter(({ entity }) => entity.availability === "fresh").length} 项最新</small></div>
-      <div className="sn-entity-grid">{entities.slice(0, 12).map(({ entity, domain }) => <EntityCard key={`${entity.domain}:${entity.id}`} entity={entity} domain={domain} />)}</div>
+      <div className="sn-section-title"><div><span>现在</span><h2>与今天有关的上下文</h2></div><small>提醒优先，其次是可立即记录的实体</small></div>
+      <div className="sn-entity-grid">{entities.slice(0, 6).map(({ entity, domain }) => <EntityCard key={`${entity.domain}:${entity.id}`} entity={entity} domain={domain} />)}</div>
     </section>}
     {quickActions.length > 0 && <section className="sn-section sn-quick-section">
-      <div className="sn-section-title"><div><span>快捷操作</span><h2>常用动作不再进入领域应用</h2></div><small>领域校验 · 自动执行 · 可复核</small></div>
-      <div className="sn-quick-grid">{quickActions.map(({ action, domain }) => <QuickActionCard key={`${action.domain}:${action.id}`} action={action} domain={domain} sessionId={sessionId} reload={reload} />)}</div>
+      <div className="sn-section-title"><div><span>快捷操作</span><h2>最常用的四个动作</h2></div><small>L0–L2 自动执行 · 回执可复核</small></div>
+      <div className="sn-quick-grid">{quickActions.slice(0, 4).map(({ action, domain }) => <QuickActionCard key={`${action.domain}:${action.id}`} action={action} domain={domain} sessionId={sessionId} reload={reload} />)}</div>
     </section>}
     <section className="sn-command">
       <button type="button" onClick={() => document.querySelector<HTMLTextAreaElement>(".sn-assistant-bar textarea")?.focus()}><span>＋</span><div><strong>告诉 Shadow</strong><small>聊天、记录、分析和附件使用同一个入口</small></div><kbd>⌘ Enter</kbd></button>
@@ -237,15 +235,9 @@ export function TodayPage({ sessionId, data, navigate, recentSessions = [], cont
       <div className="sn-section-title"><div><span>需要关注</span><h2>有证据的跨领域建议</h2></div><small>{suggestions.length} 条有效建议</small></div>
       <div className="sn-suggestion-list">{suggestions.map((suggestion) => <SuggestionCard key={suggestion.suggestion_id} suggestion={suggestion} reload={reload} addContext={addContext} ask={ask} />)}</div>
     </section>}
-    <section className="sn-section">
-      <div className="sn-section-title"><div><span>最新摘要</span><h2>各底座项目最近返回的变化</h2></div><small>{data.signals.length} 条聚合信号</small></div>
-      {data.signals.length === 0
-        ? <div className="sn-empty sn-empty-compact"><span>·</span><h2>暂时没有聚合信号</h2><p>领域服务连接后，最新摘要会在这里出现。</p></div>
-        : <div className="sn-signal-grid">{data.signals.map((signal) => <SignalCard key={signal.id} signal={signal} />)}</div>}
-    </section>
     {recentActivity.length > 0 && <section className="sn-section">
-      <div className="sn-section-title"><div><span>最近处理</span><h2>Agent 与人工操作都可回看</h2></div><small>最近 {recentActivity.length} 条</small></div>
-      <div className="sn-dashboard-activity">{recentActivity.map((draft) => <article key={draft.id}><DomainMark domain={draft.domain} /><div><strong>{draft.summary}</strong><span>{draft.decisionMode === "automatic" ? "Agent 自动处理" : draft.state === "approved" ? "人工确认" : "已退回"} · {data.domains.find((domain) => domain.id === draft.domain)?.label ?? draft.domain}</span></div><time>{new Date(draft.updatedAt ?? draft.createdAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></article>)}</div>
+      <div className="sn-section-title"><div><span>最近处理</span><h2>结果与回执</h2></div><button type="button" onClick={() => navigate("activity")}>查看完整账本</button></div>
+      <div className="sn-dashboard-activity">{recentActivity.map((entry) => <article key={entry.id}><DomainMark domain={entry.domain} /><div><strong>{entry.title}</strong><span>{entry.detail}{entry.receipt === undefined ? "" : ` · 回执 ${entry.receipt}`}</span></div><time>{new Date(entry.occurredAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</time></article>)}</div>
     </section>}
     {recentSessions.length > 0 && <section className="sn-section sn-continue-section">
       <div className="sn-section-title"><div><span>继续</span><h2>回到最近的上下文</h2></div><small>DSH Session 只作为底层容器</small></div>
@@ -288,7 +280,7 @@ export function DraftCard({ draft, sourceTitle, target, siblingCount, reload, co
     {draft.receipt !== undefined && <p>Receipt · {draft.receipt}</p>}
   </article>;
   return <article className="sn-draft" data-compact={compact}>
-    <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · 来源：{sourceTitle}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "低风险" : draft.risk === "medium" ? "需确认" : "高风险"}</em></header>
+    <header><DomainMark domain={draft.domain} /><div><span>{draft.intent}</span><time>{new Date(draft.createdAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })} · 来源：{sourceTitle}</time></div><em data-risk={draft.risk}>{draft.risk === "low" ? "L0/L1 · 自动" : draft.risk === "medium" ? "L2 · 自动" : "L3 · 复核"}</em></header>
     <h3>{draft.summary}</h3>
     <div className="sn-draft-target" data-ready={connectedTarget}>
       <DomainMark domain={draft.domain} />
@@ -518,8 +510,8 @@ export function ActivityPage({ data, navigate }: NexusPageProps) {
     <section className="sn-activity-ledger">{data.activity.length === 0
       ? <div className="sn-empty sn-empty-compact"><h2>还没有活动</h2><p>执行快捷动作或处理 Proposal 后，会在这里留下可复核记录。</p></div>
       : data.activity.map((entry) => <article key={entry.id} data-status={entry.status}>
-        <DomainMark domain={entry.domain} /><div><span>{data.domains.find((domain) => domain.id === entry.domain)?.label ?? entry.domain} · {entry.actor === "agent" ? "Agent" : "你"}</span><h2>{entry.title}</h2><p>{entry.detail}</p></div>
-        <aside><strong>{activityLabels[entry.status]}</strong><time>{new Date(entry.occurredAt).toLocaleString("zh-CN")}</time><small>{entry.receiptAvailable ? "回执已保留" : entry.reviewRequired ? "可进入复核" : "无写入回执"}</small></aside>
+        <DomainMark domain={entry.domain} /><div><span>{data.domains.find((domain) => domain.id === entry.domain)?.label ?? entry.domain} · {entry.actor === "agent" ? "Agent" : "你"}</span><h2>{entry.title}</h2><p>{entry.detail}</p>{entry.capabilityRef !== undefined && <code>{entry.capabilityRef}</code>}{entry.correlationId !== undefined && <small>关联：{entry.correlationId}{entry.failureCode === undefined ? "" : ` · 失败分类：${entry.failureCode}`}</small>}</div>
+        <aside><strong>{activityLabels[entry.status]}</strong><time>{new Date(entry.occurredAt).toLocaleString("zh-CN")}</time><small>{entry.receiptAvailable ? `回执：${entry.receipt ?? "已保留"}` : entry.reviewRequired ? "可进入复核" : "无写入回执"}</small></aside>
       </article>)}</section>
     {data.trust.pending + data.trust.failed > 0 && <button className="sn-primary sn-activity-review" type="button" onClick={() => navigate("review")}>处理 {data.trust.pending + data.trust.failed} 项例外</button>}
   </div>;
@@ -544,6 +536,7 @@ export function TrustPage({ data, navigate, reload }: NexusPageProps) {
     <header className="sn-page-header"><span>TRUST / CONTROL</span><h1>默认信任 Agent，保留看得见的控制。</h1><p>L0–L2 默认自动执行并留回执；L3 明确复核；L4 直接阻止。自动失败不会重试写入，而是升级为例外。</p></header>
     <section className="sn-trust-score"><div><span>自动完成占比</span><strong>{automaticRate}<small>%</small></strong><p>在已处理项目中，无需逐项确认</p></div><div><span>自动完成</span><strong>{data.trust.automatic}</strong><p>均保留领域回执</p></div><div><span>人工确认</span><strong>{data.trust.manual}</strong><p>高影响或策略要求</p></div><div data-tone={data.trust.failed + data.trust.pending > 0 ? "attention" : "calm"}><span>当前例外</span><strong>{data.trust.failed + data.trust.pending}</strong><p>失败与待复核</p></div></section>
     <section className="sn-section"><div className="sn-section-title"><div><span>执行边界</span><h2>信任不是取消复核，而是把复核放到例外</h2></div><button type="button" onClick={() => navigate("activity")}>查看活动账本</button></div><div className="sn-policy-grid"><article><b>L0–L2</b><strong>自动执行</strong><p>参数仍由领域校验，幂等写入并保留回执。</p></article><article><b>L3</b><strong>明确复核</strong><p>高影响操作必须由你决定，确认可签名。</p></article><article><b>L4</b><strong>策略阻止</strong><p>保护性边界不允许在 Nexus 中绕过。</p></article></div></section>
+    <section className="sn-section"><div className="sn-section-title"><div><span>运行证据</span><h2>能力生命周期不靠推断</h2></div><small>{data.capabilities.protocol === "unavailable" ? "Platform 状态投影未加载" : `构建 ${data.capabilities.buildId?.slice(0, 12) ?? "unknown"}`}</small></div><div className="sn-policy-grid"><article><b>Client</b><strong>{data.capabilities.client} / {data.capabilities.selected}</strong><p>仅表示客户端已按契约编译。</p></article><article><b>Observed</b><strong>{data.capabilities.observed} / {data.capabilities.selected}</strong><p>只计算真实在线探针证据。</p></article><article><b>Failed</b><strong>{data.capabilities.failed}</strong><p>缺失证据保持 unknown，不冒充失败或通过。</p></article></div></section>
     <section className="sn-section"><div className="sn-section-title"><div><span>主动偏好</span><h2>简报有节奏，敏感信息默认不进通知</h2></div><small>持久化在 Nexus 控制面</small></div><div className="sn-preferences">
       <label><span>简报频率</span><select value={preferences.briefCadence} onChange={(event) => setPreferences((current) => ({ ...current, briefCadence: event.target.value as NexusPreferences["briefCadence"] }))}><option value="daily">每日</option><option value="weekly">每周</option><option value="off">关闭</option></select></label>
       <label><span>静默开始</span><input type="time" value={preferences.quietHoursStart} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursStart: event.target.value }))} /></label>
@@ -558,7 +551,7 @@ export function TrustPage({ data, navigate, reload }: NexusPageProps) {
 
 export function builtinNexusModules(): readonly NexusModuleDescriptor[] {
   return [
-    { id: "nexus:today", apiVersion: 1, title: "数据面板", route: "today", icon: "◫", group: "home", order: 0, scope: "root", page: TodayPage },
+    { id: "nexus:today", apiVersion: 1, title: "今日", route: "today", icon: "◫", group: "home", order: 0, scope: "root", page: TodayPage },
     { id: "nexus:search", apiVersion: 1, title: "搜索", route: "search", icon: "⌕", group: "home", order: 10, scope: "root", page: SearchPage, available: ({ data }) => data.domains.some((domain) => domain.searchEnabled) },
     { id: "nexus:activity", apiVersion: 1, title: "活动", route: "activity", icon: "≋", group: "home", order: 20, scope: "root", page: ActivityPage },
     { id: "nexus:review", apiVersion: 1, title: "待我处理", route: "review", icon: "◇", group: "home", order: 30, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined },

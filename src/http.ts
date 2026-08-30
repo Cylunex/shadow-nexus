@@ -8,6 +8,7 @@ import { AssetGatewayError, type AssetGateway } from "./assets.js";
 import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, NexusContextCreate, NexusContextPack, NexusMemory, NexusMemoryCorrect, NexusMemoryCreate, NexusPreferences, NexusQuickActionRequest, NexusSuggestion, ReviewRequest, SuggestionAction } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createAnalyzedDrafts, createBootstrap, defaultNexusPreferences, reclassifyStoredDraft, reviewDraft } from "./projection.js";
+import { validateSubmittedAnalysis } from "./plan-contract.js";
 import { upsertProposal } from "./proposals.js";
 
 const MAX_BODY_BYTES = 1_048_576;
@@ -325,20 +326,36 @@ function forgetMemory(state: NexusState, id: unknown, now = new Date()): NexusMe
 
 function withExecutionPolicy(draft: CaptureDraft, domains: DomainGateway): CaptureDraft {
   const policy = domains.policyFor(draft);
+  const traced: CaptureDraft = {
+    ...draft,
+    ...(policy.capabilityRef === undefined ? {} : { capabilityRef: policy.capabilityRef }),
+    ...(policy.operationId === undefined ? {} : { operationId: policy.operationId }),
+    correlationId: draft.correlationId ?? draft.captureGroupId ?? draft.id,
+    idempotencyKey: draft.id
+  };
   if (policy.mode === "automatic") {
-    if (draft.risk === policy.risk && draft.reviewReason === undefined && draft.executionError === undefined) return draft;
-    const { reviewReason: _reviewReason, executionError: _executionError, ...rest } = draft;
+    const { reviewReason: _reviewReason, executionError: _executionError, failureCode: _failureCode, ...rest } = traced;
     return { ...rest, risk: policy.risk };
   }
   const reviewReason = policy.mode === "prohibited" ? "prohibited" : policy.risk === "high" ? "high-risk" : "policy";
-  if (draft.risk === policy.risk && draft.reviewReason === reviewReason
-    && (policy.mode !== "prohibited" || draft.confirmable === false)) return draft;
   return {
-    ...draft,
+    ...traced,
     risk: policy.risk,
     reviewReason,
     ...(policy.mode === "prohibited" ? { confirmable: false } : {})
   };
+}
+
+function executionFailureCode(error: unknown): string {
+  if (error instanceof DomainGatewayError) {
+    if (error.code !== undefined) return error.code;
+    if (error.status === 401 || error.status === 403) return "domain-permission-denied";
+    if (error.status === 422) return "domain-validation-rejected";
+    if (error.status === 502) return "domain-invalid-response";
+    if (error.status === 503) return "domain-unavailable";
+    return `domain-${String(error.status)}`;
+  }
+  return "unexpected-execution-failure";
 }
 
 async function executeTrustedDraft(draft: CaptureDraft, domains: DomainGateway): Promise<CaptureDraft> {
@@ -351,7 +368,9 @@ async function executeTrustedDraft(draft: CaptureDraft, domains: DomainGateway):
     return {
       ...draft,
       reviewReason: "execution-failed",
-      executionError: error instanceof Error ? error.message : "自动执行失败，请在复核页重试。"
+      executionError: error instanceof Error ? error.message : "自动执行失败，请在复核页重试。",
+      failureCode: executionFailureCode(error),
+      updatedAt: new Date().toISOString()
     };
   }
 }
@@ -527,10 +546,13 @@ export async function handleNexusRequest(
       if (attachments.some((attachment) => attachment === undefined || attachment.sessionId !== input.sessionId)) {
         throw new RequestError(404, "没有找到这组附件。");
       }
+      let analysis: CaptureRequest["analysis"];
+      try { analysis = validateSubmittedAnalysis(input.analysis); }
+      catch (error) { throw new RequestError(422, error instanceof Error ? error.message : "结构化计划无效。"); }
       const proposed = createAnalyzedDrafts(
         input.sessionId.trim(),
         input.text,
-        input.analysis,
+        analysis,
         new Date(),
         attachments.flatMap((attachment) => attachment === undefined ? [] : [attachment.referenceUri]),
         new Set(domains.runtime.domains.map((domain) => domain.id))

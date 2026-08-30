@@ -1,5 +1,6 @@
 import { type ConversationSnapshot, type ISessions, type SessionFace, type SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import type { CaptureAnalysis, CaptureDraft, DomainSummary, NexusAssetAttachment, NexusAssetUploadTicket, NexusIntentPlan, NexusInteractionResult } from "../contracts.js";
+import { captureAnalysisFromBlocks, intentPlanFromBlocks, safeIntentFallback } from "../plan-contract.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusAskContext } from "./contracts.js";
 
@@ -13,31 +14,23 @@ function sessionFace(sessions: ISessions, sessionId: string): SessionFace {
 function assistantText(snapshot: ConversationSnapshot, captureId: string, afterSeq: number): CaptureAnalysis | undefined {
   for (const node of snapshot.nodes) {
     if (node.kind !== "assistant" || node.seq <= afterSeq || !snapshot.turnEnds.has(node.turn)) continue;
-    const text = node.blocks.flatMap((block) => block.kind === "text" ? [block.text] : []).join("\n");
-    const match = text.match(/<shadow-nexus-capture>\s*([\s\S]*?)\s*<\/shadow-nexus-capture>/u);
-    if (match?.[1] === undefined) continue;
-    let value: unknown;
-    try { value = JSON.parse(match[1]); }
-    catch { throw new Error("DSH 已完成响应，但结构化分析不是有效 JSON。"); }
-    if (typeof value !== "object" || value === null || (value as { readonly captureId?: unknown }).captureId !== captureId) continue;
-    return value as CaptureAnalysis;
+    const analysis = captureAnalysisFromBlocks(node.blocks, captureId, node.provenance);
+    if (analysis !== undefined) return analysis;
   }
   return undefined;
 }
 
-function intentPlan(snapshot: ConversationSnapshot, interactionId: string, afterSeq: number): NexusIntentPlan | undefined {
+function intentPlan(snapshot: ConversationSnapshot, interactionId: string, afterSeq: number, explicitRecord: boolean): NexusIntentPlan | undefined {
+  let fallback: Extract<ConversationSnapshot["nodes"][number], { readonly kind: "assistant" }> | undefined;
   for (const node of snapshot.nodes) {
     if (node.kind !== "assistant" || node.seq <= afterSeq || !snapshot.turnEnds.has(node.turn)) continue;
-    const content = node.blocks.flatMap((block) => block.kind === "text" ? [block.text] : []).join("\n");
-    const match = content.match(/<shadow-nexus-plan>\s*([\s\S]*?)\s*<\/shadow-nexus-plan>/u);
-    if (match?.[1] === undefined) continue;
-    let value: unknown;
-    try { value = JSON.parse(match[1]); }
-    catch { throw new Error("DSH 已完成响应，但处理计划不是有效 JSON。"); }
-    if (typeof value !== "object" || value === null || (value as { readonly interactionId?: unknown }).interactionId !== interactionId) continue;
-    return value as NexusIntentPlan;
+    fallback = node;
+    try {
+      const plan = intentPlanFromBlocks(node.blocks, interactionId, node.provenance);
+      if (plan !== undefined) return plan;
+    } catch { /* Keep scanning later steps in the completed turn before failing closed. */ }
   }
-  return undefined;
+  return fallback === undefined ? undefined : safeIntentFallback(fallback.blocks, interactionId, explicitRecord, fallback.provenance);
 }
 
 export function waitForCaptureAnalysis(face: SessionFace, captureId: string, afterSeq: number, timeoutMs = 10 * 60_000): Promise<CaptureAnalysis> {
@@ -74,7 +67,7 @@ export function waitForCaptureAnalysis(face: SessionFace, captureId: string, aft
   });
 }
 
-export function waitForIntentPlan(face: SessionFace, interactionId: string, afterSeq: number, timeoutMs = 10 * 60_000): Promise<NexusIntentPlan> {
+export function waitForIntentPlan(face: SessionFace, interactionId: string, afterSeq: number, explicitRecord = false, timeoutMs = 10 * 60_000): Promise<NexusIntentPlan> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let off = () => {};
@@ -89,14 +82,14 @@ export function waitForIntentPlan(face: SessionFace, interactionId: string, afte
     const inspect = () => {
       try {
         const snapshot = face.getSnapshot();
-        const plan = intentPlan(snapshot, interactionId, afterSeq);
+        const plan = intentPlan(snapshot, interactionId, afterSeq, explicitRecord);
         if (plan !== undefined) finish({ value: plan });
         else {
           const requestNode = snapshot.nodes.find((node) => node.kind === "user" && node.seq > afterSeq && JSON.stringify(node.content).includes(interactionId));
           const completedWithoutEnvelope = requestNode === undefined ? undefined : snapshot.nodes.find(
             (node) => node.kind === "assistant" && node.seq > requestNode.seq && snapshot.turnEnds.has(node.turn)
           );
-          if (completedWithoutEnvelope !== undefined) finish({ error: new Error("DSH 已完成响应，但没有返回 Nexus 处理计划；未生成任何 Proposal。") });
+          if (completedWithoutEnvelope?.kind === "assistant") finish({ value: safeIntentFallback(completedWithoutEnvelope.blocks, interactionId, explicitRecord, completedWithoutEnvelope.provenance) });
         }
       } catch (error) { finish({ error: error instanceof Error ? error : new Error("无法读取 DSH 处理计划。") }); }
     };
@@ -146,12 +139,12 @@ export async function submitNexus(
   const domainGuide = writableDomains.length === 0
     ? "当前没有安装可采集领域；drafts 必须为空。"
     : writableDomains.map((domain) => `- ${domain.id}（${domain.label}）：intent 使用 ${domain.intentPrefixes.join(" / ") || `${domain.id}.action`}；审核风险 ${domain.reviewRisk ?? "low"}`).join("\n");
-  const prompt = `[Shadow Nexus · Unified Interaction]\n你负责正常回答用户，并为 Nexus 生成可验证的处理计划。可以使用当前 Profile 里的只读工具获取回答所需事实；绝不直接调用写入、草稿、确认、修改或删除能力。\n${routingOverride}${pageContext}\n当前由 Platform 投影安装的可采集领域：\n${domainGuide}\n\n处理规则：\n1. 用户只是在询问、讨论、比较或表达感受时，route=answer，drafts=[]。\n2. 用户明确要求保存事实时，才为最合适的已安装领域生成 Proposal；需要回答又需要记录时 route=mixed。\n3. 不能因文本里偶然出现数值或日期而擅自记录。\n4. 同一事实只生成一次；一段输入包含多个独立领域事实时可拆成多个 Proposal。\n5. 缺少不可推断的必要字段时 route=clarify，只问一个必要问题，drafts=[]。\n6. response 是给用户看的简洁中文回复；生成 Proposal 时说明识别结果，但不要声称已经写入。\n7. domain 只能取上面的已安装 id；intent 必须使用该领域声明的前缀。\n8. fields 必须符合当前 Profile 中该领域 Skill/工具的请求字段；所有值编码为字符串，数组或对象编码为 JSON 字符串。\n9. 风险取领域投影声明的审核风险，不自行降低。\n\n先给出正常中文回复，最后严格输出下面标记和 JSON，不要在标记后输出内容。\n<shadow-nexus-plan>\n{"version":2,"interactionId":${JSON.stringify(interactionId)},"route":"answer|propose|mixed|clarify","response":"给用户的回复","drafts":[{"domain":"已安装领域 id","intent":"领域声明的 intent","summary":"供用户确认的简短摘要","risk":"low|medium|high","fields":{"fieldName":"value"}}]}\n</shadow-nexus-plan>\n\n用户输入：\n${userText || "请查看附件并按上述规则处理。"}${attachmentContext}`;
+  const prompt = `[Shadow Nexus · Unified Interaction]\n你负责正常回答用户，并为 Nexus 生成可验证的处理计划。可以使用当前 Profile 里的只读工具获取回答所需事实；绝不直接调用写入、草稿、确认、修改或删除能力。\n${routingOverride}${pageContext}\n当前由 Platform 投影安装的可采集领域：\n${domainGuide}\n\n处理规则：\n1. 用户只是在询问、讨论、比较或表达感受时，route=answer，drafts=[]。\n2. 用户明确要求保存事实时，才为最合适的已安装领域生成 Proposal；需要回答又需要记录时 route=mixed。\n3. 不能因文本里偶然出现数值或日期而擅自记录。\n4. 同一事实只生成一次；一段输入包含多个独立领域事实时可拆成多个 Proposal。\n5. 缺少不可推断的必要字段时 route=clarify，只问一个必要问题，drafts=[]。\n6. response 是给用户看的简洁中文回复；生成 Proposal 时说明识别结果，但不要声称已经写入。\n7. domain 只能取上面的已安装 id；intent 必须使用该领域声明的前缀。\n8. fields 必须符合当前 Profile 中该领域 Skill/工具的请求字段；所有值编码为字符串，数组或对象编码为 JSON 字符串。\n9. 风险取领域投影声明的审核风险，不自行降低。\n\n输出契约：只输出一个完整 JSON 对象，不要输出 Markdown、标签、代码围栏或对象以外的文字。字段必须与下面示例完全一致，不得增加字段。若 Provider 提供 shadow_nexus_plan 结构化工具，可用完全相同的参数调用它。\n{"protocol":"shadow.nexus.plan.v1","version":3,"interactionId":${JSON.stringify(interactionId)},"route":"answer|propose|mixed|clarify","response":"给用户的回复","drafts":[{"domain":"已安装领域 id","intent":"领域声明的 intent","summary":"供用户确认的简短摘要","risk":"low|medium|high","fields":{"fieldName":"value"}}]}\n\n用户输入：\n${userText || "请查看附件并按上述规则处理。"}${attachmentContext}`;
   onPhase?.("analyzing");
   const accepted = await face.prompt([{ type: "text", text: prompt }], "queue");
   if (!accepted.ok) throw new Error(`${accepted.error.code}: ${accepted.error.message}`);
-  const plan = await waitForIntentPlan(face, interactionId, baselineSeq);
-  if (plan.version !== 2 || plan.interactionId !== interactionId) throw new Error("DSH 返回的处理计划版本无效。");
+  const plan = await waitForIntentPlan(face, interactionId, baselineSeq, command === "record" || command === "save");
+  if (plan.protocol !== "shadow.nexus.plan.v1" || plan.version !== 3 || plan.interactionId !== interactionId) throw new Error("DSH 返回的处理计划版本无效。");
   if (!Array.isArray(plan.drafts) || plan.drafts.length > 200) throw new Error("DSH 返回的 Proposal 数量无效。");
   if (plan.drafts.length === 0) {
     onPhase?.("ready");
@@ -238,7 +231,7 @@ export async function captureNexus(
   const domainGuide = domains.filter((domain) => domain.captureEnabled).map((domain) =>
     `- ${domain.id}: ${domain.intentPrefixes.join(" / ") || `${domain.id}.action`}；risk=${domain.reviewRisk ?? "low"}`
   ).join("\n");
-  const prompt = `[Shadow Nexus · Capture Analysis]\n你现在只为 Nexus 做结构化 Proposal 分析，不执行记录。不得直接调用任何领域写入、草稿、确认、修改或删除能力。除读取下方附件外不要调用工具。\n已安装领域来自 Platform 投影：\n${domainGuide || "无可采集领域；返回空 drafts。"}\n一张账单、表格或多条文字可以生成多条 Proposal；不要合并独立事实。最多返回 200 条。domain 和 intent 只能使用上面声明的值；fields 遵循当前 Profile 的领域 Skill/工具请求字段，所有值使用字符串，数组或对象编码为 JSON 字符串。\n只输出下面标记及 JSON，不要输出解释或 Markdown。captureId 必须原样返回。\n<shadow-nexus-capture>\n{"version":1,"captureId":${JSON.stringify(captureId)},"drafts":[{"domain":"已安装领域 id","intent":"领域声明的 intent","summary":"供用户确认的简短摘要","risk":"low|medium|high","fields":{"fieldName":"value"}}]}\n</shadow-nexus-capture>\n\n用户说明：\n${original || "请从附件中提取需要记录的独立事实。"}${attachmentContext}`;
+  const prompt = `[Shadow Nexus · Capture Analysis]\n你现在只为 Nexus 做结构化 Proposal 分析，不执行记录。不得直接调用任何领域写入、草稿、确认、修改或删除能力。除读取下方附件外不要调用工具。\n已安装领域来自 Platform 投影：\n${domainGuide || "无可采集领域；返回空 drafts。"}\n一张账单、表格或多条文字可以生成多条 Proposal；不要合并独立事实。最多返回 200 条。domain 和 intent 只能使用上面声明的值；fields 遵循当前 Profile 的领域 Skill/工具请求字段，所有值使用字符串，数组或对象编码为 JSON 字符串。\n只输出一个完整 JSON 对象，不要输出解释、Markdown、标签、代码围栏或额外字段。若 Provider 提供 shadow_nexus_capture 结构化工具，可用完全相同的参数调用它。captureId 必须原样返回。\n{"protocol":"shadow.nexus.capture.v1","version":2,"captureId":${JSON.stringify(captureId)},"drafts":[{"domain":"已安装领域 id","intent":"领域声明的 intent","summary":"供用户确认的简短摘要","risk":"low|medium|high","fields":{"fieldName":"value"}}]}\n\n用户说明：\n${original || "请从附件中提取需要记录的独立事实。"}${attachmentContext}`;
   const accepted = await face.prompt([{ type: "text", text: prompt }], "queue");
   if (!accepted.ok) throw new Error(`${accepted.error.code}: ${accepted.error.message}`);
   const analysis = await waitForCaptureAnalysis(face, captureId, baselineSeq);

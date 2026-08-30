@@ -11,10 +11,12 @@ export { nexusBasePathFromPluginUrl } from "./client-path.js";
 export { NexusLayoutState } from "./client/layout-state.js";
 export { DefaultNexusModuleRegistry } from "./client/module-registry.js";
 export { parseNexusNavigation, writeNexusNavigation } from "./client/navigation.js";
+export { bridgeCan, readShadowNativeBridge, requestNative } from "./client/native-bridge.js";
 export { assertTrustedRequest, createContextPack, createMemory, createNexusState, handleNexusRequest } from "./http.js";
 export * from "./domains.js";
 export * from "./proposals.js";
 export * from "./projection.js";
+export * from "./plan-contract.js";
 
 export const name = "shadow-nexus";
 export const inject = ["webServer"];

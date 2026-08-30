@@ -4,21 +4,25 @@ import { createAnalyzedDrafts, sameProposal, upsertProposal } from "../lib/index
 
 function analyzed(sessionId, interactionId, fields, summary = "Alpha proposal") {
   return createAnalyzedDrafts(sessionId, summary, {
-    version: 2,
+    protocol: "shadow.nexus.plan.v1",
+    version: 3,
     interactionId,
     route: "propose",
     response: "已整理为待确认 Proposal。",
-    drafts: [{ domain: "alpha", intent: "alpha.record", summary, risk: "medium", fields }]
+    drafts: [{ domain: "alpha", intent: "alpha.record", summary, risk: "medium", fields }],
+    contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame" }
   }, new Date("2026-08-26T04:00:00Z"), [], new Set(["alpha"]))[0];
 }
 
 test("accepts an answer-only plan without proposals", () => {
   assert.deepEqual(createAnalyzedDrafts("session-a", "question", {
-    version: 2,
+    protocol: "shadow.nexus.plan.v1",
+    version: 3,
     interactionId: "interaction_12345678-abcd",
     route: "answer",
     response: "answer",
-    drafts: []
+    drafts: [],
+    contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame" }
   }), []);
 });
 

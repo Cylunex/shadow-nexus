@@ -7,6 +7,7 @@ import type { NexusAskContext, NexusModuleContext, NexusModuleGroup, NexusModule
 import type { NexusLayoutState } from "./layout-state.js";
 import { NexusModuleBoundary } from "./module-boundary.js";
 import type { NexusNavigationStore } from "./navigation.js";
+import { bridgeCan, readShadowNativeBridge, requestNative, type ShadowNativeBridge } from "./native-bridge.js";
 import { DraftCard, projectedNexusModules } from "./pages.js";
 
 const groupLabels: Record<NexusModuleGroup, string> = {
@@ -35,6 +36,7 @@ interface AssistantBarProps {
   readonly domains: NexusBootstrap["domains"];
   readonly reload: () => Promise<void>;
   readonly submitInteraction: (text: string, attachments: readonly NexusAssetAttachment[], onPhase: (phase: InteractionPhase) => void) => Promise<NexusInteractionResult>;
+  readonly nativeBridge: ShadowNativeBridge | undefined;
 }
 
 interface DraftAttachment {
@@ -55,15 +57,6 @@ interface PendingAppCapture {
     readonly type: string;
     readonly size: number;
   };
-}
-
-interface AppShellBridge {
-  getPendingCapture(): string;
-  completePendingCapture(captureId: string): void;
-  openSettings?(): void;
-  showBriefNotification?(briefJson: string): void;
-  getOfflineActions?(): string;
-  completeOfflineAction?(actionId: string): void;
 }
 
 interface NativeOfflineAction {
@@ -111,7 +104,7 @@ function phaseLabel(phase: "uploading" | InteractionPhase | undefined): string {
   return "发送";
 }
 
-function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnabled, maxFiles, domains, reload, submitInteraction }: AssistantBarProps) {
+function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnabled, maxFiles, domains, reload, submitInteraction, nativeBridge }: AssistantBarProps) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<readonly DraftAttachment[]>([]);
   const [composerHeight, setComposerHeight] = useState(savedComposerHeight);
@@ -169,18 +162,13 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
   }
 
   useEffect(() => {
-    if (sessionId === undefined) return;
-    const shell = (globalThis as typeof globalThis & { readonly ShellBridge?: AppShellBridge }).ShellBridge;
-    if (shell === undefined) return;
-    let capture: PendingAppCapture;
-    try {
-      capture = JSON.parse(shell.getPendingCapture()) as PendingAppCapture;
-    } catch { return; }
-    if (typeof capture.capture_id !== "string" || importedCapture.current === capture.capture_id) return;
-    importedCapture.current = capture.capture_id;
+    if (sessionId === undefined || !bridgeCan(nativeBridge, "media")) return;
     let cancelled = false;
     void (async () => {
       try {
+        const capture = await requestNative<PendingAppCapture>(nativeBridge, "media", "capture.get");
+        if (typeof capture.capture_id !== "string" || importedCapture.current === capture.capture_id || cancelled) return;
+        importedCapture.current = capture.capture_id;
         let sharedFile: File | undefined;
         if (capture.file !== undefined) {
           if (!assetUploadEnabled) throw new Error("Shadow Asset 尚未连接，无法接收分享文件。");
@@ -194,14 +182,16 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
           setText((current) => current.trim() === "" ? capture.text?.trim() ?? "" : `${current}\n\n${capture.text?.trim() ?? ""}`);
         }
         if (sharedFile !== undefined) addFiles([sharedFile]);
-        if (!cancelled) shell.completePendingCapture(capture.capture_id);
+        if (!cancelled) await requestNative(nativeBridge, "media", "capture.complete", { captureId: capture.capture_id });
       } catch (caught) {
         importedCapture.current = undefined;
-        if (!cancelled) setError(caught instanceof Error ? caught.message : "无法接收 Android 分享内容。");
+        if (!cancelled && !(caught instanceof Error && caught.message.startsWith("native_capability_unavailable"))) {
+          setError(caught instanceof Error ? caught.message : "无法接收 Android 分享内容。");
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [assetUploadEnabled, sessionId]);
+  }, [assetUploadEnabled, nativeBridge, sessionId]);
 
   async function submit() {
     if (sessionId === undefined || (text.trim() === "" && attachments.length === 0)) return;
@@ -312,6 +302,7 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
 
 export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessions, layout, modules, navigation }: NexusWorkspaceProps) {
   const { data, loading, error, reload } = useNexusBootstrap(sessionId);
+  const [nativeBridge, setNativeBridge] = useState<ShadowNativeBridge | undefined>(() => readShadowNativeBridge());
   const subscribeModules = useCallback((listener: () => void) => modules.subscribe(listener), [modules]);
   const readModules = useCallback(() => modules.getSnapshot(), [modules]);
   const registered = useSyncExternalStore(subscribeModules, readModules, readModules);
@@ -372,31 +363,37 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     label,
     modules: available.filter((module) => module.group === group)
   })).filter((item) => item.modules.length > 0);
-  const appShell = (globalThis as typeof globalThis & { readonly ShellBridge?: AppShellBridge }).ShellBridge;
+  useEffect(() => {
+    const refresh = () => setNativeBridge(readShadowNativeBridge());
+    window.addEventListener("shadow-native-ready", refresh);
+    refresh();
+    return () => window.removeEventListener("shadow-native-ready", refresh);
+  }, []);
 
   useEffect(() => {
-    if (data.brief?.notify === true) appShell?.showBriefNotification?.(JSON.stringify(data.brief));
-  }, [appShell, data.brief]);
+    if (data.brief?.notify !== true || !bridgeCan(nativeBridge, "notification")) return;
+    void requestNative(nativeBridge, "notification", "brief.show", {
+      brief: { id: data.brief.id, title: data.brief.title, body: data.brief.body, notify: data.brief.notify }
+    }).catch(() => undefined);
+  }, [nativeBridge, data.brief]);
 
   useEffect(() => {
-    if (appShell?.getOfflineActions === undefined || appShell.completeOfflineAction === undefined) return;
-    let items: readonly NativeOfflineAction[];
-    try { items = JSON.parse(appShell.getOfflineActions()) as readonly NativeOfflineAction[]; }
-    catch { return; }
-    if (!Array.isArray(items) || items.length === 0) return;
+    if (!bridgeCan(nativeBridge, "operations")) return;
     let cancelled = false;
     void (async () => {
+      const items = await requestNative<readonly NativeOfflineAction[]>(nativeBridge, "operations", "offline.list");
+      if (!Array.isArray(items) || items.length === 0) return;
       for (const item of items) {
         if (cancelled || typeof item.id !== "string") return;
         try {
           await nexusJson(await fetch(nexusEndpoint("quick-actions/execute"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) }));
-          appShell.completeOfflineAction?.(item.id);
+          await requestNative(nativeBridge, "operations", "offline.complete", { actionId: item.id });
         } catch { return; }
       }
       if (!cancelled) await reload();
-    })();
+    })().catch(() => undefined);
     return () => { cancelled = true; };
-  }, [appShell, data.generatedAt, reload]);
+  }, [nativeBridge, data.generatedAt, reload]);
 
   return <div className="sn-app">
     <aside className="sn-sidebar">
@@ -413,7 +410,7 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
         </section>)}
       </nav>
       <button className="sn-conversation-entry" type="button" onClick={showConversation}><i>⌁</i><span>对话</span><small>{sessionId === undefined ? "先选择工作台会话" : `在「${sessionTitle ?? sessionId}」中继续`}</small></button>
-      <footer><span className="sn-orbit"><i /></span><div><strong>{sessionTitle ?? "Shadow"}</strong><small>{loading ? "同步中" : error === undefined ? sessionId === undefined ? "等待选择 DSH Session" : "工作台会话已连接" : "连接异常"}</small></div>{appShell?.openSettings !== undefined && <button className="sn-device-settings" type="button" title="平台与设备设置" onClick={() => appShell.openSettings?.()}>⚙</button>}</footer>
+       <footer><span className="sn-orbit"><i /></span><div><strong>{sessionTitle ?? "Shadow"}</strong><small>{loading ? "同步中" : error === undefined ? sessionId === undefined ? "等待选择 DSH Session" : "工作台会话已连接" : "连接异常"}</small></div>{bridgeCan(nativeBridge, "web") && <button className="sn-device-settings" type="button" title="平台与设备设置" onClick={() => { void requestNative(nativeBridge, "web", "shell.openSettings").catch(() => undefined); }}>⚙</button>}</footer>
     </aside>
     <main className="sn-main">
       <header className="sn-workspace-session">
@@ -431,6 +428,6 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
           <Page sessionId={sessionId} sessions={sessions} data={data} loading={loading} error={error} reload={reload} navigate={navigate} showConversation={showConversation} ask={ask} addContext={addContext} removeContext={removeContext} recentSessions={recentSessions} continueSession={continueSession} />
         </NexusModuleBoundary>}
     </main>
-    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} contextLabel={`${active?.title ?? "现在"}${data.contexts.length > 0 ? ` · ${String(data.contexts.length)} 项` : ""}`} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} domains={data.domains} reload={reload} submitInteraction={submitInteraction} />
+    <AssistantBar sessionId={sessionId} sessionTitle={sessionTitle} contextLabel={`${active?.title ?? "现在"}${data.contexts.length > 0 ? ` · ${String(data.contexts.length)} 项` : ""}`} assetUploadEnabled={data.assetUpload.enabled} maxFiles={data.assetUpload.maxFilesPerMessage} domains={data.domains} reload={reload} submitInteraction={submitInteraction} nativeBridge={nativeBridge} />
   </div>;
 }

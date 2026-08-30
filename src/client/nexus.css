@@ -269,6 +269,7 @@ body[data-shadow-nexus-root="true"] { margin: 0; overflow: hidden; }
 .sn-suggestion > header em { color: #7588ad; font-size: 9px; font-style: normal; }
 .sn-suggestion > p { margin: 12px 0 5px; color: #b6c1d7; font-size: 10px; line-height: 1.7; }
 .sn-suggestion > small { display: block; color: #6f7d98; font-size: 9px; line-height: 1.7; }
+.sn-suggestion > .sn-action-notice { margin: 10px 0 0; padding: 8px 10px; border: 1px solid rgba(91, 177, 143, .28); border-radius: 8px; color: #8fc9b2; background: rgba(34, 105, 80, .12); }
 .sn-suggestion > footer { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
 .sn-suggestion > footer button { min-height: 30px; padding: 0 11px; }
 .sn-dashboard-domain-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); gap: 10px; }
@@ -305,6 +306,8 @@ body[data-shadow-nexus-root="true"] { margin: 0; overflow: hidden; }
 .sn-activity-ledger article span, .sn-activity-ledger article p, .sn-activity-ledger aside { color: #667590; font-size: 8px; }
 .sn-activity-ledger h2 { margin: 4px 0; color: #d0daec; font-size: 10px; }
 .sn-activity-ledger p { margin: 0; }
+.sn-activity-ledger article code { display: block; overflow: hidden; margin-top: 7px; color: #657a9e; font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.sn-activity-ledger article > div > small { display: block; margin-top: 4px; color: #68758c; font-size: 7px; }
 .sn-activity-ledger aside { display: grid; justify-items: end; gap: 4px; }
 .sn-activity-ledger aside strong { color: #8c9fc3; font-size: 8px; }
 .sn-activity-ledger time, .sn-activity-ledger small { white-space: nowrap; }

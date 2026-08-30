@@ -7,6 +7,35 @@ export type RiskLevel = "low" | "medium" | "high";
 export type ProposalMatch = "new" | "linked" | "existing";
 export type DraftDecisionMode = "automatic" | "manual";
 export type DraftReviewReason = "high-risk" | "policy" | "execution-failed" | "prohibited";
+export type PlanContractSource = "tool-call" | "json-frame" | "legacy-envelope" | "safe-fallback";
+export type CapabilityMaturity = "not-selected" | "none" | "contract" | "client" | "deployed" | "observed" | "restore-tested" | "failed";
+
+export interface PlanContractMetadata {
+  readonly protocol: "shadow.nexus.plan-contract.v1";
+  readonly source: PlanContractSource;
+  readonly provider?: string;
+  readonly model?: string;
+}
+
+export interface NexusCapabilityAttention {
+  readonly capabilityRef: string;
+  readonly maturity: CapabilityMaturity;
+  readonly detail: string;
+  readonly evidenceId?: string;
+}
+
+export interface NexusCapabilityStatus {
+  readonly protocol: "shadow.capability-status.v1" | "unavailable";
+  readonly buildId?: string;
+  readonly generatedAt?: string;
+  readonly selected: number;
+  readonly client: number;
+  readonly deployed: number;
+  readonly observed: number;
+  readonly restoreTested: number;
+  readonly failed: number;
+  readonly attention: readonly NexusCapabilityAttention[];
+}
 
 export interface DomainMetric {
   readonly id: string;
@@ -96,6 +125,7 @@ export interface DomainSummary {
   readonly appUrl?: string;
   readonly reviewRisk?: RiskLevel;
   readonly intentPrefixes: readonly string[];
+  readonly capabilityMaturity?: CapabilityMaturity;
 }
 
 export interface NexusSearchItem {
@@ -194,6 +224,13 @@ export interface CaptureDraft {
   readonly decisionMode?: DraftDecisionMode;
   readonly reviewReason?: DraftReviewReason;
   readonly executionError?: string;
+  readonly failureCode?: string;
+  readonly capabilityRef?: string;
+  readonly operationId?: string;
+  readonly correlationId?: string;
+  readonly idempotencyKey?: string;
+  readonly traceId?: string;
+  readonly planContract?: PlanContractMetadata;
 }
 
 export type ActivityStatus = "pending" | "completed" | "rejected" | "failed" | "prohibited";
@@ -209,6 +246,13 @@ export interface ActivityEntry {
   readonly reviewRequired: boolean;
   readonly receiptAvailable: boolean;
   readonly detail: string;
+  readonly receipt?: string;
+  readonly capabilityRef?: string;
+  readonly correlationId?: string;
+  readonly idempotencyKey?: string;
+  readonly traceId?: string;
+  readonly failureCode?: string;
+  readonly planSource?: PlanContractSource;
 }
 
 export interface TrustDomainStats {
@@ -294,6 +338,7 @@ export interface NexusBootstrap {
   readonly memories: readonly NexusMemory[];
   readonly contexts: readonly NexusContextPack[];
   readonly suggestions: readonly NexusSuggestion[];
+  readonly capabilities: NexusCapabilityStatus;
   readonly assetUpload: {
     readonly enabled: boolean;
     readonly maxFilesPerMessage: number;
@@ -344,19 +389,23 @@ export interface CaptureAnalysisDraft {
 }
 
 export interface CaptureAnalysis {
-  readonly version: 1;
+  readonly protocol: "shadow.nexus.capture.v1";
+  readonly version: 2;
   readonly captureId: string;
   readonly drafts: readonly CaptureAnalysisDraft[];
+  readonly contract: PlanContractMetadata;
 }
 
 export type IntentRoute = "answer" | "propose" | "mixed" | "clarify";
 
 export interface NexusIntentPlan {
-  readonly version: 2;
+  readonly protocol: "shadow.nexus.plan.v1";
+  readonly version: 3;
   readonly interactionId: string;
   readonly route: IntentRoute;
   readonly response: string;
   readonly drafts: readonly CaptureAnalysisDraft[];
+  readonly contract: PlanContractMetadata;
 }
 
 export interface NexusInteractionResult {

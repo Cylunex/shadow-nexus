@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { HttpDomainGateway, loadNexusRuntime } from "../lib/index.js";
+import { HttpDomainGateway, loadCapabilityStatus, loadNexusRuntime } from "../lib/index.js";
 
 function operation(operationId, method, path, capabilityId, riskLevel = "L0", effect = "read", confirmationResource = null) {
   return {
@@ -152,6 +152,32 @@ function draft(domain, fields = { value: "8" }) {
   };
 }
 
+test("keeps capability lifecycle stages and evidence explicit", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shadow-capability-status-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "shadow-capability-status.json");
+  const value = runtime();
+  await writeFile(file, JSON.stringify({
+    version: 1, protocol: "shadow.capability-status.v1", deployment_id: value.deployment_id,
+    build_id: value.build_id, generated_at: "2026-08-30T12:00:00Z", summary: {}, capabilities: [{
+      capability_ref: "shadow://capabilities/shadow-alpha/alpha-test/alpha.records.write",
+      plugin_id: "shadow-alpha", instance_id: "alpha-test", capability_id: "alpha.records.write",
+      selected: true, client_channels: ["nexus"], maturity: "failed", stages: {
+        contract: { status: "passed", evidence_id: "contract-1" }, client: { status: "passed", evidence_id: "client-1" },
+        deployed: { status: "unknown" }, observed: { status: "failed", evidence_id: "probe-1", detail: "probe rejected" },
+        restore_tested: { status: "unknown" }
+      }
+    }]
+  }), "utf8");
+  const status = loadCapabilityStatus(value, file);
+  assert.equal(status.selected, 1);
+  assert.equal(status.client, 1);
+  assert.equal(status.deployed, 0);
+  assert.equal(status.observed, 0);
+  assert.equal(status.failed, 1);
+  assert.equal(status.attention[0].evidenceId, "probe-1");
+});
+
 test("loads a compiled runtime and projects arbitrary domains without source adapters", async (context) => {
   const fixture = await fixtureServer();
   context.after(() => new Promise((resolve, reject) => fixture.server.close((error) => error ? reject(error) : resolve())));
@@ -213,12 +239,18 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
 test("uses runtime risk as the floor and trusts L0-L2 by default", () => {
   const value = runtime();
   const trusted = new HttpDomainGateway(1_000, value, "trusted");
-  assert.deepEqual(trusted.policyFor(draft("alpha")), { risk: "medium", mode: "automatic" });
-  assert.deepEqual(trusted.policyFor({ ...draft("beta"), risk: "high" }), { risk: "high", mode: "review" });
-  assert.deepEqual(new HttpDomainGateway(1_000, value, "review-first").policyFor(draft("beta")), { risk: "low", mode: "review" });
+  const automatic = trusted.policyFor(draft("alpha"));
+  assert.deepEqual({ risk: automatic.risk, mode: automatic.mode }, { risk: "medium", mode: "automatic" });
+  assert.equal(automatic.operationId, "commit_alpha_review");
+  assert.match(automatic.capabilityRef, /^shadow:\/\/capabilities\//u);
+  const raised = trusted.policyFor({ ...draft("beta"), risk: "high" });
+  assert.deepEqual({ risk: raised.risk, mode: raised.mode }, { risk: "high", mode: "review" });
+  const reviewFirst = new HttpDomainGateway(1_000, value, "review-first").policyFor(draft("beta"));
+  assert.deepEqual({ risk: reviewFirst.risk, mode: reviewFirst.mode }, { risk: "low", mode: "review" });
 
   value.domains[0].review.operations.commit.risk_level = "L4";
-  assert.deepEqual(trusted.policyFor(draft("alpha")), { risk: "high", mode: "prohibited" });
+  const prohibited = trusted.policyFor(draft("alpha"));
+  assert.deepEqual({ risk: prohibited.risk, mode: prohibited.mode }, { risk: "high", mode: "prohibited" });
 });
 
 test("commits and rejects a federated review by its opaque domain id", async (context) => {

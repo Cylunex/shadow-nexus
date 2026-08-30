@@ -7,6 +7,7 @@ import {
   type NexusBootstrap,
   type NexusContextPack,
   type NexusBrief,
+  type NexusCapabilityStatus,
   type NexusMemory,
   type NexusPreferences,
   type NexusIntentPlan,
@@ -20,9 +21,14 @@ export interface BootstrapProjection {
   readonly mode: "preview" | "connected";
   readonly domains: readonly DomainSummary[];
   readonly signals: readonly TodaySignal[];
+  readonly capabilities?: NexusCapabilityStatus;
 }
 
-export const disconnectedProjection: BootstrapProjection = { mode: "preview", domains: [], signals: [] };
+export const unavailableCapabilityStatus: NexusCapabilityStatus = {
+  protocol: "unavailable", selected: 0, client: 0, deployed: 0, observed: 0, restoreTested: 0, failed: 0, attention: []
+};
+
+export const disconnectedProjection: BootstrapProjection = { mode: "preview", domains: [], signals: [], capabilities: unavailableCapabilityStatus };
 
 export const defaultNexusPreferences: NexusPreferences = {
   notificationsEnabled: true,
@@ -63,15 +69,15 @@ export function createAnalyzedDrafts(
   installedDomains?: ReadonlySet<string>
 ): readonly CaptureDraft[] {
   const trimmed = text.trim() === "" && attachmentRefs.length > 0 ? "来自附件的批量记录" : validateCapture(text);
-  const analysisId = analysis.version === 1 ? analysis.captureId : analysis.interactionId;
-  const validId = analysis.version === 1
+  const analysisId = analysis.version === 2 ? analysis.captureId : analysis.interactionId;
+  const validId = analysis.version === 2
     ? /^capture_[A-Za-z0-9-]{8,80}$/u.test(analysisId)
     : /^interaction_[A-Za-z0-9-]{8,80}$/u.test(analysisId);
   if (!validId) throw new Error("DSH 返回的采集分析标识无效。");
-  if (!Array.isArray(analysis.drafts) || analysis.drafts.length > 200 || (analysis.version === 1 && analysis.drafts.length < 1)) {
+  if (!Array.isArray(analysis.drafts) || analysis.drafts.length > 200 || (analysis.version === 2 && analysis.drafts.length < 1)) {
     throw new Error("DSH 没有返回可确认的领域草稿。");
   }
-  if (analysis.version === 2) {
+  if (analysis.version === 3) {
     if (!new Set(["answer", "propose", "mixed", "clarify"]).has(analysis.route)) throw new Error("DSH 返回的处理路由无效。");
     if (typeof analysis.response !== "string" || analysis.response.length > 4_000) throw new Error("DSH 返回的回复摘要无效。");
     if ((analysis.route === "answer" || analysis.route === "clarify") && analysis.drafts.length > 0) throw new Error("DSH 返回的处理路由与 Proposal 不一致。");
@@ -116,7 +122,8 @@ export function createAnalyzedDrafts(
       risk: item.risk,
       fields,
       origin: "nexus",
-      attachmentRefs
+      attachmentRefs,
+      planContract: analysis.contract
     };
   });
 }
@@ -160,6 +167,7 @@ export function createBootstrap(
     memories,
     contexts,
     suggestions,
+    capabilities: projection.capabilities ?? unavailableCapabilityStatus,
     assetUpload: { enabled: assetUploadEnabled, maxFilesPerMessage: 8 }
   };
 }
@@ -242,7 +250,14 @@ export function createActivityLedger(drafts: readonly CaptureDraft[]): readonly 
       risk: draft.risk,
       reviewRequired: status === "pending" || status === "failed",
       receiptAvailable: draft.state === "approved" && typeof draft.receipt === "string" && draft.receipt !== "",
-      detail: activityDetail(draft, status)
+      detail: activityDetail(draft, status),
+      ...(draft.state !== "approved" || draft.receipt === undefined ? {} : { receipt: draft.receipt }),
+      ...(draft.capabilityRef === undefined ? {} : { capabilityRef: draft.capabilityRef }),
+      ...(draft.correlationId === undefined ? {} : { correlationId: draft.correlationId }),
+      ...(draft.idempotencyKey === undefined ? {} : { idempotencyKey: draft.idempotencyKey }),
+      ...(draft.traceId === undefined ? {} : { traceId: draft.traceId }),
+      ...(draft.failureCode === undefined ? {} : { failureCode: draft.failureCode }),
+      ...(draft.planContract === undefined ? {} : { planSource: draft.planContract.source })
     };
   }).toSorted((left, right) => right.occurredAt.localeCompare(left.occurredAt));
 }

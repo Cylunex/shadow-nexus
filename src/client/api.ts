@@ -19,6 +19,7 @@ const fallback: NexusBootstrap = {
   memories: [],
   contexts: [],
   suggestions: [],
+  capabilities: { protocol: "unavailable", selected: 0, client: 0, deployed: 0, observed: 0, restoreTested: 0, failed: 0, attention: [] },
   assetUpload: { enabled: false, maxFilesPerMessage: 8 }
 };
 
