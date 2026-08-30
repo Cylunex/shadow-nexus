@@ -9,6 +9,8 @@ import {
   createAnalyzedDrafts,
   createBootstrap,
   createContextPack,
+  createMemory,
+  createNexusBrief,
   createDraft,
   createDrafts,
   createNexusState,
@@ -72,6 +74,23 @@ test("bootstrap projects only compiled domains", () => {
   assert.equal(bootstrap.protocol, "shadow.nexus.v1");
   assert.deepEqual(bootstrap.domains.map((item) => item.id), ["alpha"]);
   assert.equal(bootstrap.assetUpload.enabled, true);
+  assert.equal(bootstrap.activity.length, 1);
+  assert.equal(bootstrap.activity[0].status, "pending");
+  assert.equal(bootstrap.trust.pending, 1);
+});
+
+test("normalizes automatic, failed, and prohibited drafts into activity and trust projections", () => {
+  const base = proposal();
+  const bootstrap = createBootstrap("session-a", [
+    { ...base, id: "automatic", state: "approved", decisionMode: "automatic", receipt: "shadow://alpha/records/1" },
+    { ...base, id: "failed", reviewReason: "execution-failed", executionError: "temporarily unavailable" },
+    { ...base, id: "blocked", reviewReason: "prohibited", confirmable: false }
+  ], new Date("2026-08-26T08:00:00Z"));
+  assert.deepEqual(bootstrap.activity.map((item) => item.status), ["completed", "failed", "prohibited"]);
+  assert.equal(bootstrap.activity[0].receiptAvailable, true);
+  assert.equal(bootstrap.trust.automatic, 1);
+  assert.equal(bootstrap.trust.failed, 1);
+  assert.equal(bootstrap.trust.prohibited, 1);
 });
 
 test("creates expiring Context Packs and persists them with the current session", async (context) => {
@@ -119,6 +138,34 @@ test("review creates a receipt and cannot be repeated", () => {
   assert.equal(approved.state, "approved");
   assert.match(approved.receipt ?? "", /^preview:alpha:/u);
   assert.throws(() => reviewDraft(approved, "reject"), /已经处理/u);
+});
+
+test("persists governed memory revisions and proactive preferences", async (context) => {
+  const directory = await mkdtemp(join(tmpdir(), "shadow-nexus-memory-"));
+  context.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, "state.json");
+  const state = createNexusState(file);
+  await state.ready;
+  const memory = createMemory({ content: "Prefer quiet evening workouts", expiresInDays: 30 }, new Date("2026-08-27T08:00:00Z"));
+  state.memories.set(`${memory.id}:${memory.version}`, memory);
+  state.preferences = { ...state.preferences, briefCadence: "weekly", notificationsEnabled: false };
+  await state.persist();
+  const restored = createNexusState(file);
+  await restored.ready;
+  assert.equal(restored.memories.get(`${memory.id}:1`)?.content, memory.content);
+  assert.equal(restored.preferences.briefCadence, "weekly");
+  assert.equal(restored.preferences.notificationsEnabled, false);
+});
+
+test("creates stable briefs without leaking entity values", () => {
+  const preferences = { notificationsEnabled: true, quietHoursStart: "22:00", quietHoursEnd: "08:00", sensitivePreviews: false, briefCadence: "daily" };
+  const brief = createNexusBrief({ mode: "connected", signals: [], domains: [{
+    id: "health", label: "Health", caption: "", status: "ready", metric: "", detail: "", icon: "health", color: "#112233", order: 1,
+    captureEnabled: true, searchEnabled: false, intentPrefixes: [], entities: [{ id: "weight", domain: "health", label: "Weight", class: "measurement", sensitivity: "sensitive", availability: "stale", value: "72.4", unit: "kg", icon: "weight", tone: "neutral", order: 1, actionIds: [] }]
+  }] }, { total: 1, automatic: 0, manual: 0, rejected: 0, pending: 1, failed: 0, prohibited: 0, domains: [] }, [], preferences, new Date("2026-08-27T12:00:00Z"));
+  assert.equal(brief?.notify, true);
+  assert.match(brief?.body ?? "", /需要复核/u);
+  assert.doesNotMatch(brief?.body ?? "", /72\.4/u);
 });
 
 test("automatically executes trusted proposals and keeps a review receipt", async (context) => {

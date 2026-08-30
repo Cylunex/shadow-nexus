@@ -1,13 +1,18 @@
 import {
   NEXUS_PROTOCOL_VERSION,
   type CaptureAnalysis,
+  type ActivityEntry,
   type CaptureDraft,
   type DomainSummary,
   type NexusBootstrap,
   type NexusContextPack,
+  type NexusBrief,
+  type NexusMemory,
+  type NexusPreferences,
   type NexusIntentPlan,
   type NexusSuggestion,
   type RiskLevel,
+  type TrustOverview,
   type TodaySignal
 } from "./contracts.js";
 
@@ -18,6 +23,14 @@ export interface BootstrapProjection {
 }
 
 export const disconnectedProjection: BootstrapProjection = { mode: "preview", domains: [], signals: [] };
+
+export const defaultNexusPreferences: NexusPreferences = {
+  notificationsEnabled: true,
+  quietHoursStart: "22:00",
+  quietHoursEnd: "08:00",
+  sensitivePreviews: false,
+  briefCadence: "daily"
+};
 
 const supportedRisks = new Set<RiskLevel>(["low", "medium", "high"]);
 
@@ -121,11 +134,15 @@ export function createBootstrap(
   projection: BootstrapProjection = disconnectedProjection,
   assetUploadEnabled = false,
   contexts: readonly NexusContextPack[] = [],
-  suggestions: readonly NexusSuggestion[] = []
+  suggestions: readonly NexusSuggestion[] = [],
+  preferences: NexusPreferences = defaultNexusPreferences,
+  memories: readonly NexusMemory[] = []
 ): NexusBootstrap {
   const dateLabel = new Intl.DateTimeFormat("zh-CN", { month: "long", day: "numeric", weekday: "long" }).format(now);
   const hour = now.getHours();
   const greeting = hour < 6 ? "夜深了，欢迎回来。" : hour < 12 ? "早上好，欢迎回来。" : hour < 18 ? "下午好，欢迎回来。" : "晚上好，欢迎回来。";
+  const activity = createActivityLedger(drafts);
+  const trust = createTrustOverview(drafts);
   return {
     protocol: NEXUS_PROTOCOL_VERSION,
     mode: projection.mode,
@@ -136,9 +153,123 @@ export function createBootstrap(
     signals: projection.signals,
     domains: projection.domains,
     drafts,
+    activity,
+    trust,
+    preferences,
+    brief: createNexusBrief(projection, trust, suggestions, preferences, now),
+    memories,
     contexts,
     suggestions,
     assetUpload: { enabled: assetUploadEnabled, maxFilesPerMessage: 8 }
+  };
+}
+
+function minutesOfDay(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+  return (hours ?? 0) * 60 + (minutes ?? 0);
+}
+
+function inQuietHours(preferences: NexusPreferences, now: Date): boolean {
+  const current = now.getHours() * 60 + now.getMinutes();
+  const start = minutesOfDay(preferences.quietHoursStart);
+  const end = minutesOfDay(preferences.quietHoursEnd);
+  return start === end ? false : start < end ? current >= start && current < end : current >= start || current < end;
+}
+
+export function createNexusBrief(
+  projection: BootstrapProjection,
+  trust: TrustOverview,
+  suggestions: readonly NexusSuggestion[],
+  preferences: NexusPreferences,
+  now = new Date()
+): NexusBrief | null {
+  if (preferences.briefCadence === "off") return null;
+  const entityAttention = projection.domains.flatMap((domain) => domain.entities ?? []).filter((entity) => entity.attention !== undefined).length;
+  const exceptions = trust.pending + trust.failed + trust.prohibited;
+  const itemCount = exceptions + suggestions.length + entityAttention;
+  const period = preferences.briefCadence === "weekly"
+    ? `${String(now.getFullYear())}-W${String(Math.ceil((((now.getTime() - new Date(now.getFullYear(), 0, 1).getTime()) / 86_400_000) + new Date(now.getFullYear(), 0, 1).getDay() + 1) / 7)).padStart(2, "0")}`
+    : now.toISOString().slice(0, 10);
+  const parts = [
+    exceptions > 0 ? `${String(exceptions)} 项需要复核` : "没有待复核例外",
+    suggestions.length > 0 ? `${String(suggestions.length)} 条建议` : "暂无新建议",
+    entityAttention > 0 ? `${String(entityAttention)} 项数据提醒` : "常用数据无需关注"
+  ];
+  if (preferences.sensitivePreviews) {
+    const preview = projection.domains.flatMap((domain) => domain.entities ?? [])
+      .filter((entity) => entity.sensitivity === "sensitive" && entity.availability !== "unavailable")
+      .slice(0, 2).map((entity) => `${entity.label} ${entity.value}${entity.unit ?? ""}`);
+    if (preview.length > 0) parts.push(preview.join("，"));
+  }
+  const cadenceReady = preferences.briefCadence === "daily" || now.getDay() === 1;
+  return {
+    id: `brief-${preferences.briefCadence}-${period}`,
+    title: preferences.briefCadence === "weekly" ? "Shadow 本周简报" : "Shadow 今日简报",
+    body: parts.join(" · "),
+    severity: trust.failed + trust.prohibited > 0 ? "urgent" : itemCount > 0 ? "attention" : "info",
+    generatedAt: now.toISOString(),
+    notify: preferences.notificationsEnabled && cadenceReady && itemCount > 0 && !inQuietHours(preferences, now),
+    itemCount
+  };
+}
+
+function activityStatus(draft: CaptureDraft): ActivityEntry["status"] {
+  if (draft.state === "approved") return "completed";
+  if (draft.state === "rejected") return "rejected";
+  if (draft.reviewReason === "execution-failed") return "failed";
+  if (draft.reviewReason === "prohibited") return "prohibited";
+  return "pending";
+}
+
+function activityDetail(draft: CaptureDraft, status: ActivityEntry["status"]): string {
+  if (status === "completed") return draft.decisionMode === "automatic" ? "Agent 自动完成，领域回执已保留" : "由你确认后完成";
+  if (status === "rejected") return "由你退回，未写入领域事实";
+  if (status === "failed") return draft.executionError ?? "自动执行失败，已转入复核";
+  if (status === "prohibited") return "策略禁止执行，未写入领域事实";
+  return draft.reviewReason === "high-risk" ? "高影响操作等待明确复核" : "策略例外等待复核";
+}
+
+export function createActivityLedger(drafts: readonly CaptureDraft[]): readonly ActivityEntry[] {
+  return drafts.map((draft): ActivityEntry => {
+    const status = activityStatus(draft);
+    return {
+      id: draft.id,
+      domain: draft.domain,
+      title: draft.summary,
+      occurredAt: draft.updatedAt ?? draft.createdAt,
+      actor: draft.decisionMode === "automatic" || draft.state === "pending" ? "agent" : "user",
+      status,
+      risk: draft.risk,
+      reviewRequired: status === "pending" || status === "failed",
+      receiptAvailable: draft.state === "approved" && typeof draft.receipt === "string" && draft.receipt !== "",
+      detail: activityDetail(draft, status)
+    };
+  }).toSorted((left, right) => right.occurredAt.localeCompare(left.occurredAt));
+}
+
+export function createTrustOverview(drafts: readonly CaptureDraft[]): TrustOverview {
+  const activity = createActivityLedger(drafts);
+  const domains = new Map<string, { automatic: number; manual: number; rejected: number; pending: number; failed: number; prohibited: number }>();
+  for (const draft of drafts) {
+    const stats = domains.get(draft.domain) ?? { automatic: 0, manual: 0, rejected: 0, pending: 0, failed: 0, prohibited: 0 };
+    const status = activityStatus(draft);
+    if (status === "completed" && draft.decisionMode === "automatic") stats.automatic += 1;
+    if (status === "completed" && draft.decisionMode !== "automatic") stats.manual += 1;
+    if (status === "rejected") stats.rejected += 1;
+    if (status === "pending") stats.pending += 1;
+    if (status === "failed") stats.failed += 1;
+    if (status === "prohibited") stats.prohibited += 1;
+    domains.set(draft.domain, stats);
+  }
+  return {
+    total: activity.length,
+    automatic: drafts.filter((draft) => draft.state === "approved" && draft.decisionMode === "automatic").length,
+    manual: drafts.filter((draft) => draft.state === "approved" && draft.decisionMode !== "automatic").length,
+    rejected: activity.filter((entry) => entry.status === "rejected").length,
+    pending: activity.filter((entry) => entry.status === "pending").length,
+    failed: activity.filter((entry) => entry.status === "failed").length,
+    prohibited: activity.filter((entry) => entry.status === "prohibited").length,
+    domains: [...domains.entries()].map(([domain, stats]) => ({ domain, ...stats })).toSorted((left, right) => left.domain.localeCompare(right.domain))
   };
 }
 
@@ -147,6 +278,7 @@ export function reviewDraft(draft: CaptureDraft, decision: "approve" | "reject",
   return {
     ...draft,
     state: decision === "approve" ? "approved" : "rejected",
+    updatedAt: now.toISOString(),
     receipt: decision === "approve" ? receipt ?? `preview:${draft.domain}:${now.toISOString()}` : `rejected:${now.toISOString()}`
   };
 }

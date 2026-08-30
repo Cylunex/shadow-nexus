@@ -1,6 +1,6 @@
 import { createHash, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import { readFileSync } from "node:fs";
-import type { CaptureDraft, DomainId, DomainMetric, DomainSummary, NexusQuickAction, NexusQuickActionField, NexusQuickActionRequest, NexusSearchResult, NexusSuggestion, RiskLevel, TodaySignal } from "./contracts.js";
+import type { CaptureDraft, DomainEntity, DomainId, DomainMetric, DomainSummary, EntityClass, EntitySensitivity, NexusQuickAction, NexusQuickActionField, NexusQuickActionRequest, NexusSearchResult, NexusSuggestion, RiskLevel, TodaySignal } from "./contracts.js";
 import type { BootstrapProjection } from "./projection.js";
 
 export interface RuntimeOperation {
@@ -78,6 +78,30 @@ export interface RuntimeReview {
   };
 }
 
+export interface RuntimeEntity {
+  readonly id: string;
+  readonly label: string;
+  readonly class: EntityClass;
+  readonly source_surface_id: string;
+  readonly value_pointer: string;
+  readonly detail_pointer?: string;
+  readonly observed_at_pointer?: string;
+  readonly unit?: string;
+  readonly icon?: string;
+  readonly tone?: DomainMetric["tone"];
+  readonly sensitivity: EntitySensitivity;
+  readonly freshness_seconds?: number;
+  readonly order?: number;
+  readonly action_ids?: readonly string[];
+  readonly attention?: readonly {
+    readonly id: string;
+    readonly operator: "stale" | "unavailable" | "above" | "below";
+    readonly threshold?: number;
+    readonly severity: "attention" | "warning";
+    readonly message: string;
+  }[];
+}
+
 export interface RuntimeDomain {
   readonly id: DomainId;
   readonly product_id: string;
@@ -99,6 +123,7 @@ export interface RuntimeDomain {
     readonly context_env: Readonly<Record<string, string>>;
   };
   readonly surfaces: readonly RuntimeSurface[];
+  readonly entities?: readonly RuntimeEntity[];
   readonly review: RuntimeReview | null;
   readonly app_id?: string;
   readonly app?: {
@@ -191,6 +216,8 @@ function runtimeHttpsUrl(value: unknown, label: string): void {
 
 const metricTones = new Set(["neutral", "good", "attention", "warning"]);
 const quickActionFieldTypes = new Set(["hidden", "decimal", "integer", "text", "date", "datetime", "select"]);
+const entityClasses = new Set(["measurement", "counter", "money", "status", "progress", "content", "schedule", "device", "location", "custom"]);
+const entitySensitivities = new Set(["public", "personal", "sensitive", "restricted"]);
 
 function validateDisplayMetrics(surface: RuntimeSurface): void {
   const metrics = surface.display?.metrics;
@@ -263,6 +290,45 @@ function validateQuickActionSurface(surface: RuntimeSurface): void {
   if (placeholders.some((id) => id === undefined || !ids.has(id))) throw new DomainGatewayError(500, "Nexus 快捷动作摘要模板无效。");
 }
 
+function validPointer(value: unknown): boolean {
+  return typeof value === "string" && (value === "" || value.startsWith("/")) && value.length <= 200;
+}
+
+function validateEntities(domain: RuntimeDomain): void {
+  const entities = domain.entities ?? [];
+  if (!Array.isArray(entities) || entities.length > 64) throw new DomainGatewayError(500, "Nexus 实体投影无效。");
+  const ids = new Set<string>();
+  const surfaces = new Map(domain.surfaces.map((surface) => [surface.id, surface]));
+  for (const candidate of entities as readonly unknown[]) {
+    if (typeof candidate !== "object" || candidate === null) throw new DomainGatewayError(500, "Nexus 实体投影无效。");
+    const entity = candidate as RuntimeEntity;
+    const source = surfaces.get(entity.source_surface_id);
+    const actions = entity.action_ids ?? [];
+    const attention = entity.attention ?? [];
+    if (!/^[a-z][a-z0-9-]{1,63}$/u.test(entity.id) || ids.has(entity.id)
+      || runtimeString(entity.label, "entity label").length > 40
+      || !entityClasses.has(entity.class) || !entitySensitivities.has(entity.sensitivity)
+      || source?.type !== "summary" || !validPointer(entity.value_pointer)
+      || (entity.detail_pointer !== undefined && !validPointer(entity.detail_pointer))
+      || (entity.observed_at_pointer !== undefined && !validPointer(entity.observed_at_pointer))
+      || (entity.unit !== undefined && (typeof entity.unit !== "string" || entity.unit.length > 16))
+      || (entity.tone !== undefined && !metricTones.has(entity.tone))
+      || (entity.freshness_seconds !== undefined && (!Number.isInteger(entity.freshness_seconds) || entity.freshness_seconds < 60 || entity.freshness_seconds > 31_536_000))
+      || (entity.order !== undefined && (!Number.isInteger(entity.order) || entity.order < 0 || entity.order > 10_000))
+      || !Array.isArray(actions) || actions.length > 8 || new Set(actions).size !== actions.length
+      || actions.some((id) => surfaces.get(id)?.type !== "quick-action")
+      || !Array.isArray(attention) || attention.length > 8 || attention.some((rule) =>
+        typeof rule !== "object" || rule === null || !/^[a-z][a-z0-9-]{1,63}$/u.test(rule.id)
+        || !new Set(["stale", "unavailable", "above", "below"]).has(rule.operator)
+        || !new Set(["attention", "warning"]).has(rule.severity)
+        || typeof rule.message !== "string" || rule.message.trim() === "" || rule.message.length > 120
+        || ((rule.operator === "above" || rule.operator === "below") && !Number.isFinite(rule.threshold)))) {
+      throw new DomainGatewayError(500, "Nexus 实体投影无效。");
+    }
+    ids.add(entity.id);
+  }
+}
+
 export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_FILE")): NexusRuntime {
   if (path === undefined) return emptyRuntime;
   let parsed: unknown;
@@ -287,6 +353,7 @@ export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_F
       validateDisplayMetrics(surface);
       validateQuickActionSurface(surface);
     }
+    validateEntities(domain);
     if (domain.app !== undefined && domain.app !== null) {
       if (typeof domain.app !== "object" || !Array.isArray(domain.app.aliases)) throw new DomainGatewayError(500, "Nexus 应用入口无效。");
       runtimeHttpsUrl(domain.app.canonical_url, "canonical app URL");
@@ -401,6 +468,61 @@ function displayMetrics(value: unknown, surface: RuntimeSurface): readonly Domai
       ...(definition.tone === undefined ? {} : { tone: definition.tone })
     }];
   });
+}
+
+function unavailableEntities(domain: RuntimeDomain): readonly DomainEntity[] {
+  return (domain.entities ?? []).map((entity) => {
+    const matched = (entity.attention ?? []).find((rule) => rule.operator === "unavailable");
+    return {
+      id: entity.id,
+      domain: domain.id,
+      label: entity.label,
+      class: entity.class,
+      sensitivity: entity.sensitivity,
+      availability: "unavailable",
+      value: "—",
+      ...(entity.unit === undefined ? {} : { unit: entity.unit }),
+      icon: entity.icon ?? entity.id,
+      tone: entity.tone ?? "neutral",
+      order: entity.order ?? domain.presentation.order,
+      actionIds: entity.action_ids ?? [],
+      ...(matched === undefined ? {} : { attention: { ruleId: matched.id, severity: matched.severity, message: matched.message } })
+    };
+  });
+}
+
+function projectEntities(domain: RuntimeDomain, surface: RuntimeSurface, value: unknown, now: Date): readonly DomainEntity[] {
+  return (domain.entities ?? []).filter((entity) => entity.source_surface_id === surface.id).map((entity): DomainEntity => {
+    const raw = displayValue(pointer(value, entity.value_pointer));
+    const detail = displayValue(pointer(value, entity.detail_pointer));
+    const declaredObservedAt = displayValue(pointer(value, entity.observed_at_pointer));
+    const parsedObservedAt = declaredObservedAt === undefined ? Number.NaN : Date.parse(declaredObservedAt);
+    const observedAt = Number.isFinite(parsedObservedAt) ? new Date(parsedObservedAt).toISOString() : now.toISOString();
+    const stale = entity.freshness_seconds !== undefined && now.getTime() - Date.parse(observedAt) > entity.freshness_seconds * 1000;
+    const availability: DomainEntity["availability"] = raw === undefined ? "unavailable" : stale ? "stale" : "fresh";
+    const numeric = raw === undefined ? Number.NaN : Number(raw);
+    const matched = (entity.attention ?? []).find((rule) => rule.operator === availability
+      || (rule.operator === "above" && Number.isFinite(numeric) && numeric > (rule.threshold ?? Number.POSITIVE_INFINITY))
+      || (rule.operator === "below" && Number.isFinite(numeric) && numeric < (rule.threshold ?? Number.NEGATIVE_INFINITY)));
+    return {
+      id: entity.id,
+      domain: domain.id,
+      label: entity.label,
+      class: entity.class,
+      sensitivity: entity.sensitivity,
+      availability,
+      value: raw ?? "—",
+      ...(entity.unit === undefined ? {} : { unit: entity.unit }),
+      ...(detail === undefined ? {} : { detail }),
+      observedAt,
+      ...(entity.freshness_seconds === undefined ? {} : { freshnessSeconds: entity.freshness_seconds }),
+      icon: entity.icon ?? entity.id,
+      tone: entity.tone ?? "neutral",
+      order: entity.order ?? domain.presentation.order,
+      actionIds: entity.action_ids ?? [],
+      ...(matched === undefined ? {} : { attention: { ruleId: matched.id, severity: matched.severity, message: matched.message } })
+    };
+  }).sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
 }
 
 function operationPath(operation: RuntimeOperation, context: Readonly<Record<string, string>>, argumentsValue: Readonly<Record<string, unknown>> = {}): string {
@@ -736,6 +858,7 @@ export class HttpDomainGateway implements DomainGateway {
         status: "offline",
         metric: connection === undefined ? "尚未配置" : "连接异常",
         detail: connection === undefined ? "缺少运行时连接配置" : "领域服务暂时不可用",
+        entities: unavailableEntities(domain),
         quickActions: quickActions(domain),
         captureEnabled: captureSurface !== undefined,
         searchEnabled: searchSurface?.operation !== undefined,
@@ -770,7 +893,8 @@ export class HttpDomainGateway implements DomainGateway {
           value: primaryMetric,
           detail
         }];
-        const ready: DomainSummary = { ...base, status: "ready", metric: primaryMetric, detail, metrics };
+        const entities = projectEntities(domain, summarySurface, value, now);
+        const ready: DomainSummary = { ...base, status: "ready", metric: primaryMetric, detail, metrics, entities };
         domains.push(ready);
         signals.push({
           id: `${domain.id}-${now.toISOString().slice(0, 10)}`,

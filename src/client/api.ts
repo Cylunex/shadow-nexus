@@ -12,6 +12,11 @@ const fallback: NexusBootstrap = {
   signals: [],
   domains: [],
   drafts: [],
+  activity: [],
+  trust: { total: 0, automatic: 0, manual: 0, rejected: 0, pending: 0, failed: 0, prohibited: 0, domains: [] },
+  preferences: { notificationsEnabled: true, quietHoursStart: "22:00", quietHoursEnd: "08:00", sensitivePreviews: false, briefCadence: "daily" },
+  brief: null,
+  memories: [],
   contexts: [],
   suggestions: [],
   assetUpload: { enabled: false, maxFilesPerMessage: 8 }

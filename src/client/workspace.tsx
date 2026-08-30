@@ -61,6 +61,17 @@ interface AppShellBridge {
   getPendingCapture(): string;
   completePendingCapture(captureId: string): void;
   openSettings?(): void;
+  showBriefNotification?(briefJson: string): void;
+  getOfflineActions?(): string;
+  completeOfflineAction?(actionId: string): void;
+}
+
+interface NativeOfflineAction {
+  readonly id: string;
+  readonly sessionId?: string;
+  readonly domain: string;
+  readonly actionId: string;
+  readonly fields: Readonly<Record<string, string>>;
 }
 
 function draftAttachment(file: File): DraftAttachment {
@@ -362,6 +373,30 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     modules: available.filter((module) => module.group === group)
   })).filter((item) => item.modules.length > 0);
   const appShell = (globalThis as typeof globalThis & { readonly ShellBridge?: AppShellBridge }).ShellBridge;
+
+  useEffect(() => {
+    if (data.brief?.notify === true) appShell?.showBriefNotification?.(JSON.stringify(data.brief));
+  }, [appShell, data.brief]);
+
+  useEffect(() => {
+    if (appShell?.getOfflineActions === undefined || appShell.completeOfflineAction === undefined) return;
+    let items: readonly NativeOfflineAction[];
+    try { items = JSON.parse(appShell.getOfflineActions()) as readonly NativeOfflineAction[]; }
+    catch { return; }
+    if (!Array.isArray(items) || items.length === 0) return;
+    let cancelled = false;
+    void (async () => {
+      for (const item of items) {
+        if (cancelled || typeof item.id !== "string") return;
+        try {
+          await nexusJson(await fetch(nexusEndpoint("quick-actions/execute"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) }));
+          appShell.completeOfflineAction?.(item.id);
+        } catch { return; }
+      }
+      if (!cancelled) await reload();
+    })();
+    return () => { cancelled = true; };
+  }, [appShell, data.generatedAt, reload]);
 
   return <div className="sn-app">
     <aside className="sn-sidebar">

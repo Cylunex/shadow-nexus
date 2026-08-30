@@ -60,6 +60,10 @@ function runtime() {
         } },
         { id: "review", type: "review", risk_level: "L2", intent_prefixes: ["alpha.record"] }
       ],
+      entities: [
+        { id: "record-count", label: "记录", class: "counter", source_surface_id: "today", value_pointer: "/metric", observed_at_pointer: "/updated_at", unit: "项", sensitivity: "personal", freshness_seconds: 3600, order: 10, action_ids: ["quick-value"], attention: [{ id: "stale-records", operator: "stale", severity: "attention", message: "Refresh records" }] },
+        { id: "missing-value", label: "缺失", class: "status", source_surface_id: "today", value_pointer: "/missing", sensitivity: "personal", order: 20 }
+      ],
       review: { protocol: "shadow.review.v1", mode: "commit", operations: { list, create, commit, reject } },
       app_id: "alpha",
       app: { canonical_url: "https://alpha.example.test/", aliases: [] }
@@ -90,7 +94,7 @@ async function fixtureServer() {
     const body = chunks.length === 0 ? undefined : JSON.parse(Buffer.concat(chunks).toString("utf8"));
     calls.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("content-type", "application/json");
-    if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records", score: 92, score_detail: "On target" }));
+    if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records", score: 92, score_detail: "On target", updated_at: "2026-08-26T06:00:00Z" }));
     if (request.method === "GET" && request.url === "/alpha/suggestions") return response.end(JSON.stringify({ items: [{
       protocol: "shadow.suggestion.v1", suggestion_id: "sug_alpha_weekly_12345678", domain: "alpha",
       rule_id: "alpha.weekly-review", dedupe_key: "alpha:weekly:2026-W35", title: "Alpha weekly",
@@ -164,6 +168,10 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
   assert.equal(projection.domains[0].searchEnabled, true);
   assert.equal(projection.domains[0].appUrl, "https://alpha.example.test/");
   assert.equal(projection.domains[0].quickActions[0].title, "Quick value");
+  assert.deepEqual(projection.domains[0].entities, [
+    { id: "record-count", domain: "alpha", label: "记录", class: "counter", sensitivity: "personal", availability: "stale", value: "7", unit: "项", observedAt: "2026-08-26T06:00:00.000Z", freshnessSeconds: 3600, icon: "record-count", tone: "neutral", order: 10, actionIds: ["quick-value"], attention: { ruleId: "stale-records", severity: "attention", message: "Refresh records" } },
+    { id: "missing-value", domain: "alpha", label: "缺失", class: "status", sensitivity: "personal", availability: "unavailable", value: "—", observedAt: "2026-08-26T08:00:00.000Z", icon: "missing-value", tone: "neutral", order: 20, actionIds: [] }
+  ]);
   assert.equal(projection.domains[1].status, "ready");
   assert.equal(projection.domains[1].metric, "已连接");
   const quick = gateway.quickActionDraft({ sessionId: "session-a", domain: "alpha", actionId: "quick-value", fields: { value: "7.5" } }, new Date("2026-08-26T08:00:00Z"));

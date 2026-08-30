@@ -16,6 +16,29 @@ export interface DomainMetric {
   readonly tone?: "neutral" | "good" | "attention" | "warning";
 }
 
+export type EntityClass = "measurement" | "counter" | "money" | "status" | "progress" | "content" | "schedule" | "device" | "location" | "custom";
+export type EntitySensitivity = "public" | "personal" | "sensitive" | "restricted";
+export type EntityAvailability = "fresh" | "stale" | "unavailable";
+
+export interface DomainEntity {
+  readonly id: string;
+  readonly domain: DomainId;
+  readonly label: string;
+  readonly class: EntityClass;
+  readonly sensitivity: EntitySensitivity;
+  readonly availability: EntityAvailability;
+  readonly value: string;
+  readonly unit?: string;
+  readonly detail?: string;
+  readonly observedAt?: string;
+  readonly freshnessSeconds?: number;
+  readonly icon: string;
+  readonly tone: DomainMetric["tone"];
+  readonly order: number;
+  readonly actionIds: readonly string[];
+  readonly attention?: { readonly ruleId: string; readonly severity: "attention" | "warning"; readonly message: string };
+}
+
 export type QuickActionFieldType = "hidden" | "decimal" | "integer" | "text" | "date" | "datetime" | "select";
 
 export interface NexusQuickActionField {
@@ -63,6 +86,7 @@ export interface DomainSummary {
   readonly metric: string;
   readonly detail: string;
   readonly metrics?: readonly DomainMetric[];
+  readonly entities?: readonly DomainEntity[];
   readonly quickActions?: readonly NexusQuickAction[];
   readonly icon: string;
   readonly color: string;
@@ -172,6 +196,87 @@ export interface CaptureDraft {
   readonly executionError?: string;
 }
 
+export type ActivityStatus = "pending" | "completed" | "rejected" | "failed" | "prohibited";
+
+export interface ActivityEntry {
+  readonly id: string;
+  readonly domain: DomainId;
+  readonly title: string;
+  readonly occurredAt: string;
+  readonly actor: "agent" | "user";
+  readonly status: ActivityStatus;
+  readonly risk: RiskLevel;
+  readonly reviewRequired: boolean;
+  readonly receiptAvailable: boolean;
+  readonly detail: string;
+}
+
+export interface TrustDomainStats {
+  readonly domain: DomainId;
+  readonly automatic: number;
+  readonly manual: number;
+  readonly rejected: number;
+  readonly pending: number;
+  readonly failed: number;
+  readonly prohibited: number;
+}
+
+export interface TrustOverview {
+  readonly total: number;
+  readonly automatic: number;
+  readonly manual: number;
+  readonly rejected: number;
+  readonly pending: number;
+  readonly failed: number;
+  readonly prohibited: number;
+  readonly domains: readonly TrustDomainStats[];
+}
+
+export interface NexusPreferences {
+  readonly notificationsEnabled: boolean;
+  readonly quietHoursStart: string;
+  readonly quietHoursEnd: string;
+  readonly sensitivePreviews: boolean;
+  readonly briefCadence: "off" | "daily" | "weekly";
+}
+
+export interface NexusBrief {
+  readonly id: string;
+  readonly title: string;
+  readonly body: string;
+  readonly severity: "info" | "attention" | "urgent";
+  readonly generatedAt: string;
+  readonly notify: boolean;
+  readonly itemCount: number;
+}
+
+export interface NexusMemory {
+  readonly id: string;
+  readonly version: number;
+  readonly content: string;
+  readonly sourceDomain: DomainId | null;
+  readonly sourceRefs: readonly string[];
+  readonly sensitivity: "personal" | "sensitive";
+  readonly state: "active" | "superseded" | "forgotten" | "expired";
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly expiresAt?: string;
+}
+
+export interface NexusMemoryCreate {
+  readonly content: string;
+  readonly sourceDomain?: DomainId | null;
+  readonly sourceRefs?: readonly string[];
+  readonly sensitivity?: NexusMemory["sensitivity"];
+  readonly expiresInDays?: number;
+}
+
+export interface NexusMemoryCorrect {
+  readonly id: string;
+  readonly content: string;
+  readonly sourceRefs?: readonly string[];
+}
+
 export interface NexusBootstrap {
   readonly protocol: typeof NEXUS_PROTOCOL_VERSION;
   readonly mode: "preview" | "connected";
@@ -182,6 +287,11 @@ export interface NexusBootstrap {
   readonly signals: readonly TodaySignal[];
   readonly domains: readonly DomainSummary[];
   readonly drafts: readonly CaptureDraft[];
+  readonly activity: readonly ActivityEntry[];
+  readonly trust: TrustOverview;
+  readonly preferences: NexusPreferences;
+  readonly brief: NexusBrief | null;
+  readonly memories: readonly NexusMemory[];
   readonly contexts: readonly NexusContextPack[];
   readonly suggestions: readonly NexusSuggestion[];
   readonly assetUpload: {

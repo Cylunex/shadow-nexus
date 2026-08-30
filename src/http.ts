@@ -5,9 +5,9 @@ import { dirname } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import { AssetGatewayError, type AssetGateway } from "./assets.js";
-import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, NexusContextCreate, NexusContextPack, NexusQuickActionRequest, NexusSuggestion, ReviewRequest, SuggestionAction } from "./contracts.js";
+import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, NexusContextCreate, NexusContextPack, NexusMemory, NexusMemoryCorrect, NexusMemoryCreate, NexusPreferences, NexusQuickActionRequest, NexusSuggestion, ReviewRequest, SuggestionAction } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
-import { createAnalyzedDrafts, createBootstrap, reclassifyStoredDraft, reviewDraft } from "./projection.js";
+import { createAnalyzedDrafts, createBootstrap, defaultNexusPreferences, reclassifyStoredDraft, reviewDraft } from "./projection.js";
 import { upsertProposal } from "./proposals.js";
 
 const MAX_BODY_BYTES = 1_048_576;
@@ -86,6 +86,8 @@ export interface NexusState {
   readonly attachments: Map<string, NexusAssetAttachment>;
   readonly contexts: Map<string, NexusContextPack>;
   readonly suggestionFeedback: Map<string, SuggestionFeedback>;
+  readonly memories: Map<string, NexusMemory>;
+  preferences: NexusPreferences;
   readonly ready: Promise<void>;
   persist(): Promise<void>;
 }
@@ -99,11 +101,27 @@ interface SuggestionFeedback {
   readonly updatedAt: string;
 }
 
+function validClock(value: unknown): value is string {
+  return typeof value === "string" && /^(?:[01]\d|2[0-3]):[0-5]\d$/u.test(value);
+}
+
+function validatePreferences(value: Partial<NexusPreferences>): NexusPreferences {
+  const merged = { ...defaultNexusPreferences, ...value };
+  if (typeof merged.notificationsEnabled !== "boolean" || typeof merged.sensitivePreviews !== "boolean"
+    || !validClock(merged.quietHoursStart) || !validClock(merged.quietHoursEnd)
+    || !new Set(["off", "daily", "weekly"]).has(merged.briefCadence)) {
+    throw new RequestError(400, "Nexus 偏好无效。");
+  }
+  return merged;
+}
+
 export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?.trim()): NexusState {
   const drafts = new Map<string, CaptureDraft>();
   const attachments = new Map<string, NexusAssetAttachment>();
   const contexts = new Map<string, NexusContextPack>();
   const suggestionFeedback = new Map<string, SuggestionFeedback>();
+  const memories = new Map<string, NexusMemory>();
+  let preferences = defaultNexusPreferences;
   const ready = filePath === undefined || filePath === "" ? Promise.resolve() : (async () => {
     try {
       const value = JSON.parse(await readFile(filePath, "utf8")) as unknown;
@@ -147,6 +165,20 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
           suggestionFeedback.set(feedback.dedupeKey, feedback);
         }
       }
+      const storedMemories = typeof value === "object" && value !== null && !Array.isArray(value)
+        && Array.isArray((value as { readonly memories?: unknown }).memories)
+        ? (value as { readonly memories: unknown[] }).memories : [];
+      for (const item of storedMemories) {
+        if (typeof item === "object" && item !== null && typeof (item as NexusMemory).id === "string" && Number.isInteger((item as NexusMemory).version)) {
+          const memory = item as NexusMemory;
+          memories.set(`${memory.id}:${String(memory.version)}`, memory);
+        }
+      }
+      const storedPreferences = typeof value === "object" && value !== null && !Array.isArray(value)
+        ? (value as { readonly preferences?: unknown }).preferences : undefined;
+      if (typeof storedPreferences === "object" && storedPreferences !== null) {
+        preferences = validatePreferences(storedPreferences as Partial<NexusPreferences>);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -157,13 +189,16 @@ export function createNexusState(filePath = process.env.SHADOW_NEXUS_STATE_FILE?
     attachments,
     contexts,
     suggestionFeedback,
+    memories,
+    get preferences() { return preferences; },
+    set preferences(value: NexusPreferences) { preferences = value; },
     ready,
     persist: () => {
       if (filePath === undefined || filePath === "") return Promise.resolve();
       writes = writes.then(async () => {
         await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
         const temporary = `${filePath}.tmp`;
-        await writeFile(temporary, `${JSON.stringify({ version: 4, drafts: [...drafts.values()], attachments: [...attachments.values()], contexts: [...contexts.values()], suggestionFeedback: [...suggestionFeedback.values()] }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+        await writeFile(temporary, `${JSON.stringify({ version: 6, drafts: [...drafts.values()], attachments: [...attachments.values()], contexts: [...contexts.values()], suggestionFeedback: [...suggestionFeedback.values()], memories: [...memories.values()], preferences }, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
         await rename(temporary, filePath);
       });
       return writes;
@@ -225,6 +260,67 @@ async function syncFederatedDrafts(state: NexusState, domains: DomainGateway): P
     }
   }
   if (changed) await state.persist();
+}
+
+function memoryRefs(value: unknown): readonly string[] {
+  return contextStringArray(value, "sourceRefs", /^shadow:\/\//u, 16);
+}
+
+function memoryContent(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "" || value.length > 2_000) throw new RequestError(400, "记忆内容无效。");
+  return value.trim();
+}
+
+function memoryId(): string { return `mem_${randomUUID()}`; }
+
+export function createMemory(input: Partial<NexusMemoryCreate>, now = new Date()): NexusMemory {
+  const sourceDomain = input.sourceDomain ?? null;
+  if (sourceDomain !== null && !/^[a-z][a-z0-9-]{1,63}$/u.test(sourceDomain)) throw new RequestError(400, "记忆来源领域无效。");
+  const sensitivity = input.sensitivity ?? "personal";
+  if (sensitivity !== "personal" && sensitivity !== "sensitive") throw new RequestError(400, "记忆敏感级别无效。");
+  const expiresInDays = input.expiresInDays;
+  if (expiresInDays !== undefined && (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 3_650)) throw new RequestError(400, "记忆有效期无效。");
+  const timestamp = now.toISOString();
+  return {
+    id: memoryId(), version: 1, content: memoryContent(input.content), sourceDomain,
+    sourceRefs: memoryRefs(input.sourceRefs ?? ["shadow://nexus/manual"]), sensitivity,
+    state: "active", createdAt: timestamp, updatedAt: timestamp,
+    ...(expiresInDays === undefined ? {} : { expiresAt: new Date(now.getTime() + expiresInDays * 86_400_000).toISOString() })
+  };
+}
+
+function latestMemory(state: NexusState, id: string): NexusMemory | undefined {
+  return [...state.memories.values()].filter((item) => item.id === id).toSorted((left, right) => right.version - left.version)[0];
+}
+
+function activeMemories(state: NexusState, now = new Date()): readonly NexusMemory[] {
+  const ids = new Set([...state.memories.values()].map((memory) => memory.id));
+  return [...ids].flatMap((id) => {
+    const latest = latestMemory(state, id);
+    if (latest === undefined || latest.state !== "active") return [];
+    if (latest.expiresAt !== undefined && Date.parse(latest.expiresAt) <= now.getTime()) return [{ ...latest, state: "expired" as const }];
+    return [latest];
+  }).toSorted((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function correctMemory(state: NexusState, input: Partial<NexusMemoryCorrect>, now = new Date()): NexusMemory {
+  if (typeof input.id !== "string") throw new RequestError(400, "记忆标识无效。");
+  const current = latestMemory(state, input.id);
+  if (current === undefined || current.state !== "active") throw new RequestError(404, "没有找到可修正的记忆。");
+  state.memories.set(`${current.id}:${String(current.version)}`, { ...current, state: "superseded", updatedAt: now.toISOString() });
+  return {
+    ...current, version: current.version + 1, content: memoryContent(input.content),
+    sourceRefs: [...new Set([...current.sourceRefs, ...memoryRefs(input.sourceRefs ?? ["shadow://nexus/manual-correction"])])],
+    state: "active", updatedAt: now.toISOString()
+  };
+}
+
+function forgetMemory(state: NexusState, id: unknown, now = new Date()): NexusMemory {
+  if (typeof id !== "string") throw new RequestError(400, "记忆标识无效。");
+  const current = latestMemory(state, id);
+  if (current === undefined) throw new RequestError(404, "没有找到这条记忆。");
+  for (const [key, memory] of state.memories) if (memory.id === id) state.memories.delete(key);
+  return { ...current, version: current.version + 1, content: "", sourceRefs: [], state: "forgotten", updatedAt: now.toISOString(), expiresAt: now.toISOString() };
 }
 
 function withExecutionPolicy(draft: CaptureDraft, domains: DomainGateway): CaptureDraft {
@@ -295,7 +391,47 @@ export async function handleNexusRequest(
       const projection = await domains.project();
       const suggestions = visibleSuggestions(await domains.discoverSuggestions(), state, now);
       const contexts = sessionId === undefined ? [] : [...state.contexts.values()].filter((context) => context.session_id === sessionId);
-      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], now, projection, assets.configured, contexts, suggestions));
+      send(response, 200, createBootstrap(sessionId, [...state.drafts.values()], now, projection, assets.configured, contexts, suggestions, state.preferences, activeMemories(state, now)));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/preferences") {
+      state.preferences = validatePreferences(await readJson(request) as Partial<NexusPreferences>);
+      await state.persist();
+      send(response, 200, state.preferences);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/memory/create") {
+      const memory = createMemory(await readJson(request) as Partial<NexusMemoryCreate>);
+      state.memories.set(`${memory.id}:${String(memory.version)}`, memory);
+      await state.persist();
+      send(response, 201, memory);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/memory/correct") {
+      const memory = correctMemory(state, await readJson(request) as Partial<NexusMemoryCorrect>);
+      state.memories.set(`${memory.id}:${String(memory.version)}`, memory);
+      await state.persist();
+      send(response, 200, memory);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/memory/forget") {
+      const input = await readJson(request);
+      const memory = forgetMemory(state, input.id);
+      state.memories.set(`${memory.id}:${String(memory.version)}`, memory);
+      await state.persist();
+      send(response, 200, { forgotten: true, id: memory.id });
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/shadow-nexus/export") {
+      const now = new Date();
+      const projection = await domains.project(now);
+      const bootstrap = createBootstrap(undefined, [...state.drafts.values()], now, projection, assets.configured, [], [], state.preferences, activeMemories(state, now));
+      send(response, 200, {
+        protocol: "shadow.portable.v1", generatedAt: now.toISOString(), buildId: domains.runtime.build_id,
+        preferences: state.preferences, entities: projection.domains.flatMap((domain) => domain.entities ?? []),
+        activity: bootstrap.activity, trust: bootstrap.trust, memories: [...state.memories.values()],
+        contextRefs: [...state.contexts.values()].map((context) => ({ contextId: context.context_id, sourceDomain: context.source_domain, resourceRefs: context.resource_refs, createdAt: context.created_at, expiresAt: context.expires_at }))
+      });
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/suggestions/action") {

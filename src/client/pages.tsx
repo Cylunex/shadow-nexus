@@ -1,6 +1,6 @@
 import type { SessionId } from "@deepseek-ai/dsh-client-runtime/client";
 import { useState } from "react";
-import type { CaptureDraft, DomainId, DomainMetric, DomainSummary, NexusQuickAction, NexusQuickActionField, NexusSearchResult, NexusSuggestion, SuggestionAction, TodaySignal } from "../contracts.js";
+import type { ActivityEntry, CaptureDraft, DomainEntity, DomainId, DomainMetric, DomainSummary, NexusMemory, NexusPreferences, NexusQuickAction, NexusQuickActionField, NexusSearchResult, NexusSuggestion, SuggestionAction, TodaySignal } from "../contracts.js";
 import { nexusEndpoint, nexusJson } from "./api.js";
 import type { NexusModuleDescriptor, NexusPageProps } from "./contracts.js";
 
@@ -106,6 +106,22 @@ function DashboardDomainCard({ domain, navigate }: { readonly domain: DomainSumm
   </button>;
 }
 
+function focusQuickAction(entity: DomainEntity): void {
+  const actionId = entity.actionIds[0];
+  if (actionId === undefined) return;
+  const card = document.getElementById(`quick-${entity.domain}-${actionId}`);
+  card?.scrollIntoView({ behavior: "smooth", block: "center" });
+  card?.querySelector<HTMLButtonElement>(".sn-quick-action-head")?.click();
+}
+
+function EntityCard({ entity, domain }: { readonly entity: DomainEntity; readonly domain: DomainSummary }) {
+  return <article className="sn-entity" data-availability={entity.availability} data-tone={entity.tone}>
+    <header><DomainMark domain={entity.domain} /><div><span>{domain.label} · {entity.class}</span><strong>{entity.label}</strong></div><em>{entity.availability === "fresh" ? "已同步" : entity.availability === "stale" ? "待刷新" : "暂无"}</em></header>
+    <p><strong>{entity.value}</strong>{entity.unit !== undefined && entity.value !== "—" ? <small>{entity.unit}</small> : null}</p>
+    <footer><span>{entity.sensitivity === "sensitive" || entity.sensitivity === "restricted" ? "敏感信息" : "个人信息"}</span>{entity.actionIds.length > 0 && <button type="button" disabled={domain.status !== "ready"} onClick={() => focusQuickAction(entity)}>快速记录</button>}</footer>
+  </article>;
+}
+
 function quickActionDefault(field: NexusQuickActionField): string {
   if (field.default === "$today") {
     const now = new Date();
@@ -139,11 +155,17 @@ function QuickActionCard({ action, domain, sessionId, reload }: {
       setError(undefined);
       await reload();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "快捷动作执行失败。");
-      setOutcome(undefined);
+      const shell = (globalThis as typeof globalThis & { readonly ShellBridge?: { enqueueOfflineAction?(value: string): string } }).ShellBridge;
+      if (caught instanceof TypeError && shell?.enqueueOfflineAction !== undefined) {
+        try {
+          const queuedId = shell.enqueueOfflineAction(JSON.stringify({ sessionId, domain: action.domain, actionId: action.id, fields: values }));
+          if (queuedId === "") throw new Error("queue rejected");
+          setOutcome(`网络不可用，已加密排队（${queuedId}）`); setError(undefined);
+        } catch { setError("离线动作无法安全排队。"); setOutcome(undefined); }
+      } else { setError(caught instanceof Error ? caught.message : "快捷动作执行失败。"); setOutcome(undefined); }
     } finally { setBusy(false); }
   }
-  return <article className="sn-quick-action" data-expanded={expanded}>
+  return <article id={`quick-${action.domain}-${action.id}`} className="sn-quick-action" data-expanded={expanded}>
     <button className="sn-quick-action-head" type="button" disabled={domain.status !== "ready"} onClick={() => setExpanded((value) => !value)}>
       <DomainMark domain={action.domain} /><div><strong>{action.title}</strong><span>{action.description}</span></div><em>{domain.status === "ready" ? expanded ? "收起" : "开始" : "未连接"}</em>
     </button>
@@ -160,6 +182,7 @@ function QuickActionCard({ action, domain, sessionId, reload }: {
 
 export function TodayPage({ sessionId, data, navigate, recentSessions = [], continueSession, reload, addContext, ask }: NexusPageProps) {
   const pending = data.drafts.filter((draft) => draft.state === "pending").length;
+  const exceptions = data.activity.filter((entry) => entry.reviewRequired || entry.status === "prohibited").slice(0, 4);
   const suggestions = data.suggestions ?? [];
   const connected = data.domains.filter((domain) => domain.status === "ready").length;
   const automaticToday = data.drafts.filter((draft) => draft.state === "approved" && draft.decisionMode === "automatic"
@@ -169,6 +192,13 @@ export function TodayPage({ sessionId, data, navigate, recentSessions = [], cont
   const generatedTime = new Date(data.generatedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
   const quickActions = data.domains.flatMap((domain) => (domain.quickActions ?? []).map((action) => ({ action, domain })))
     .toSorted((left, right) => left.action.order - right.action.order || left.domain.order - right.domain.order);
+  const entities = data.domains.flatMap((domain) => (domain.entities ?? []).map((entity) => ({ entity, domain })))
+    .toSorted((left, right) => {
+      const availability = { stale: 0, fresh: 1, unavailable: 2 } as const;
+      return availability[left.entity.availability] - availability[right.entity.availability]
+        || left.entity.order - right.entity.order || left.domain.order - right.domain.order;
+    });
+  const entityAlerts = entities.filter(({ entity }) => entity.attention !== undefined).slice(0, 4);
   return <div className="sn-page sn-page-today">
     <header className="sn-hero sn-dashboard-hero">
       <div><span className="sn-kicker">SHADOW / DASHBOARD</span><h1>常用信息，都在这里。</h1><p>各领域项目继续保管事实；Nexus 只聚合已声明的摘要、建议和执行回执。</p></div>
@@ -180,6 +210,15 @@ export function TodayPage({ sessionId, data, navigate, recentSessions = [], cont
       <article><span>Agent 今日完成</span><strong>{automaticToday}</strong><p>均保留领域回执</p></article>
       <article data-tone={suggestions.length > 0 ? "attention" : "calm"}><span>有效建议</span><strong>{suggestions.length}</strong><p>可查看证据与处理</p></article>
     </section>
+    {data.brief !== null && <section className="sn-brief" data-severity={data.brief.severity}><div><span>主动简报 · {data.preferences.briefCadence === "weekly" ? "每周" : "每日"}</span><h2>{data.brief.title}</h2><p>{data.brief.body}</p></div><em>{data.brief.notify ? "已允许原生提醒" : "仅在首页展示"}</em></section>}
+    {exceptions.length + entityAlerts.length > 0 && <section className="sn-section sn-attention-section">
+      <div className="sn-section-title"><div><span>需要你</span><h2>只有例外和高影响操作打断你</h2></div><button type="button" onClick={() => navigate("review")}>进入复核</button></div>
+      <div className="sn-attention-list">{exceptions.map((entry) => <button type="button" key={entry.id} onClick={() => navigate("review")}><DomainMark domain={entry.domain} /><div><strong>{entry.title}</strong><span>{entry.detail}</span></div><em>{entry.status === "failed" ? "自动执行失败" : entry.status === "prohibited" ? "策略已阻止" : "等待决定"}</em></button>)}{entityAlerts.map(({ entity }) => <button type="button" key={`${entity.domain}:${entity.id}:${entity.attention?.ruleId}`} onClick={() => entity.actionIds.length > 0 ? focusQuickAction(entity) : navigate(entity.domain)}><DomainMark domain={entity.domain} /><div><strong>{entity.label}</strong><span>{entity.attention?.message}</span></div><em>{entity.attention?.severity === "warning" ? "重要提醒" : "需要关注"}</em></button>)}</div>
+    </section>}
+    {entities.length > 0 && <section className="sn-section sn-entity-section">
+      <div className="sn-section-title"><div><span>现在</span><h2>稳定实体，不再只是零散指标</h2></div><small>{entities.filter(({ entity }) => entity.availability === "fresh").length} 项最新</small></div>
+      <div className="sn-entity-grid">{entities.slice(0, 12).map(({ entity, domain }) => <EntityCard key={`${entity.domain}:${entity.id}`} entity={entity} domain={domain} />)}</div>
+    </section>}
     {quickActions.length > 0 && <section className="sn-section sn-quick-section">
       <div className="sn-section-title"><div><span>快捷操作</span><h2>常用动作不再进入领域应用</h2></div><small>领域校验 · 自动执行 · 可复核</small></div>
       <div className="sn-quick-grid">{quickActions.map(({ action, domain }) => <QuickActionCard key={`${action.domain}:${action.id}`} action={action} domain={domain} sessionId={sessionId} reload={reload} />)}</div>
@@ -419,12 +458,113 @@ function DomainPage({ data, showConversation, ask, addContext, domainId }: Nexus
   </div>;
 }
 
+const activityLabels: Readonly<Record<ActivityEntry["status"], string>> = {
+  pending: "等待复核",
+  completed: "已完成",
+  rejected: "已退回",
+  failed: "执行失败",
+  prohibited: "策略阻止"
+};
+
+export function MemoryPage({ data, reload }: NexusPageProps) {
+  const [content, setContent] = useState("");
+  const [sensitivity, setSensitivity] = useState<NexusMemory["sensitivity"]>("personal");
+  const [expiresInDays, setExpiresInDays] = useState("365");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  async function create() {
+    if (content.trim() === "") return;
+    setBusy(true);
+    try {
+      await nexusJson(await fetch(nexusEndpoint("memory/create"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: content.trim(), sensitivity, expiresInDays: Number(expiresInDays), sourceRefs: ["shadow://nexus/manual"] }) }));
+      setContent(""); setError(undefined); await reload();
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "记忆保存失败。"); }
+    finally { setBusy(false); }
+  }
+  async function correct(memory: NexusMemory) {
+    const next = globalThis.prompt("修正这条记忆", memory.content)?.trim();
+    if (next === undefined || next === "" || next === memory.content) return;
+    setBusy(true);
+    try { await nexusJson(await fetch(nexusEndpoint("memory/correct"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: memory.id, content: next, sourceRefs: ["shadow://nexus/manual-correction"] }) })); await reload(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "记忆修正失败。"); }
+    finally { setBusy(false); }
+  }
+  async function forget(memory: NexusMemory) {
+    setBusy(true);
+    try { await nexusJson(await fetch(nexusEndpoint("memory/forget"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: memory.id }) })); await reload(); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "记忆遗忘失败。"); }
+    finally { setBusy(false); }
+  }
+  async function downloadExport() {
+    setBusy(true);
+    try {
+      const response = await fetch(nexusEndpoint("export"), { cache: "no-store" });
+      if (!response.ok) throw new Error("导出失败。");
+      const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement("a");
+      anchor.href = url; anchor.download = `shadow-export-${new Date().toISOString().slice(0, 10)}.json`; anchor.click(); URL.revokeObjectURL(url);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "导出失败。"); }
+    finally { setBusy(false); }
+  }
+  return <div className="sn-page sn-memory-page"><header className="sn-page-header"><span>MEMORY / GOVERNED</span><h1>记住有来源，也允许修正和遗忘。</h1><p>Nexus 只保存你明确创建的跨领域记忆；每条记录都有来源、版本、敏感级别和有效期，不把聊天内容自动变成长久事实。</p></header>
+    <section className="sn-memory-create"><textarea value={content} maxLength={2000} onChange={(event) => setContent(event.target.value)} placeholder="例如：我更喜欢在晚饭后安排轻量训练。" /><label>敏感级别<select value={sensitivity} onChange={(event) => setSensitivity(event.target.value as NexusMemory["sensitivity"])}><option value="personal">个人</option><option value="sensitive">敏感</option></select></label><label>有效天数<input type="number" min="1" max="3650" value={expiresInDays} onChange={(event) => setExpiresInDays(event.target.value)} /></label><button className="sn-primary" type="button" disabled={busy || content.trim() === ""} onClick={() => { void create(); }}>保存记忆</button></section>
+    {error !== undefined && <p className="sn-error">{error}</p>}
+    <section className="sn-section"><div className="sn-section-title"><div><span>有效记忆</span><h2>{data.memories.length} 条由你治理的上下文</h2></div><button type="button" disabled={busy} onClick={() => { void downloadExport(); }}>导出 Shadow 数据</button></div><div className="sn-memory-list">{data.memories.length === 0 ? <div className="sn-empty sn-empty-compact"><h2>尚无长期记忆</h2></div> : data.memories.map((memory) => <article key={`${memory.id}:${String(memory.version)}`} data-state={memory.state}><header><span>{memory.sensitivity === "sensitive" ? "敏感" : "个人"} · v{memory.version}</span><time>{memory.expiresAt === undefined ? "长期有效" : `有效至 ${new Date(memory.expiresAt).toLocaleDateString("zh-CN")}`}</time></header><p>{memory.content}</p><footer><code>{memory.sourceRefs.join(" · ")}</code><button type="button" disabled={busy} onClick={() => { void correct(memory); }}>修正</button><button type="button" disabled={busy} onClick={() => { void forget(memory); }}>遗忘</button></footer></article>)}</div></section>
+  </div>;
+}
+
+export function ActivityPage({ data, navigate }: NexusPageProps) {
+  return <div className="sn-page sn-activity-page">
+    <header className="sn-page-header"><span>ACTIVITY / RECEIPTS</span><h1>发生了什么，一条账本说清楚。</h1><p>Agent 自动完成、人工确认、失败升级和策略阻止使用同一种活动语义；这里不展示草稿中的敏感字段。</p></header>
+    <section className="sn-activity-ledger">{data.activity.length === 0
+      ? <div className="sn-empty sn-empty-compact"><h2>还没有活动</h2><p>执行快捷动作或处理 Proposal 后，会在这里留下可复核记录。</p></div>
+      : data.activity.map((entry) => <article key={entry.id} data-status={entry.status}>
+        <DomainMark domain={entry.domain} /><div><span>{data.domains.find((domain) => domain.id === entry.domain)?.label ?? entry.domain} · {entry.actor === "agent" ? "Agent" : "你"}</span><h2>{entry.title}</h2><p>{entry.detail}</p></div>
+        <aside><strong>{activityLabels[entry.status]}</strong><time>{new Date(entry.occurredAt).toLocaleString("zh-CN")}</time><small>{entry.receiptAvailable ? "回执已保留" : entry.reviewRequired ? "可进入复核" : "无写入回执"}</small></aside>
+      </article>)}</section>
+    {data.trust.pending + data.trust.failed > 0 && <button className="sn-primary sn-activity-review" type="button" onClick={() => navigate("review")}>处理 {data.trust.pending + data.trust.failed} 项例外</button>}
+  </div>;
+}
+
+export function TrustPage({ data, navigate, reload }: NexusPageProps) {
+  const [preferences, setPreferences] = useState<NexusPreferences>(data.preferences);
+  const [saving, setSaving] = useState(false);
+  const [preferenceError, setPreferenceError] = useState<string>();
+  const resolved = data.trust.automatic + data.trust.manual + data.trust.rejected;
+  const automaticRate = resolved === 0 ? 0 : Math.round(data.trust.automatic / resolved * 100);
+  async function savePreferences() {
+    setSaving(true);
+    try {
+      await nexusJson(await fetch(nexusEndpoint("preferences"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(preferences) }));
+      setPreferenceError(undefined);
+      await reload();
+    } catch (caught) { setPreferenceError(caught instanceof Error ? caught.message : "偏好保存失败。"); }
+    finally { setSaving(false); }
+  }
+  return <div className="sn-page sn-trust-page">
+    <header className="sn-page-header"><span>TRUST / CONTROL</span><h1>默认信任 Agent，保留看得见的控制。</h1><p>L0–L2 默认自动执行并留回执；L3 明确复核；L4 直接阻止。自动失败不会重试写入，而是升级为例外。</p></header>
+    <section className="sn-trust-score"><div><span>自动完成占比</span><strong>{automaticRate}<small>%</small></strong><p>在已处理项目中，无需逐项确认</p></div><div><span>自动完成</span><strong>{data.trust.automatic}</strong><p>均保留领域回执</p></div><div><span>人工确认</span><strong>{data.trust.manual}</strong><p>高影响或策略要求</p></div><div data-tone={data.trust.failed + data.trust.pending > 0 ? "attention" : "calm"}><span>当前例外</span><strong>{data.trust.failed + data.trust.pending}</strong><p>失败与待复核</p></div></section>
+    <section className="sn-section"><div className="sn-section-title"><div><span>执行边界</span><h2>信任不是取消复核，而是把复核放到例外</h2></div><button type="button" onClick={() => navigate("activity")}>查看活动账本</button></div><div className="sn-policy-grid"><article><b>L0–L2</b><strong>自动执行</strong><p>参数仍由领域校验，幂等写入并保留回执。</p></article><article><b>L3</b><strong>明确复核</strong><p>高影响操作必须由你决定，确认可签名。</p></article><article><b>L4</b><strong>策略阻止</strong><p>保护性边界不允许在 Nexus 中绕过。</p></article></div></section>
+    <section className="sn-section"><div className="sn-section-title"><div><span>主动偏好</span><h2>简报有节奏，敏感信息默认不进通知</h2></div><small>持久化在 Nexus 控制面</small></div><div className="sn-preferences">
+      <label><span>简报频率</span><select value={preferences.briefCadence} onChange={(event) => setPreferences((current) => ({ ...current, briefCadence: event.target.value as NexusPreferences["briefCadence"] }))}><option value="daily">每日</option><option value="weekly">每周</option><option value="off">关闭</option></select></label>
+      <label><span>静默开始</span><input type="time" value={preferences.quietHoursStart} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursStart: event.target.value }))} /></label>
+      <label><span>静默结束</span><input type="time" value={preferences.quietHoursEnd} onChange={(event) => setPreferences((current) => ({ ...current, quietHoursEnd: event.target.value }))} /></label>
+      <label className="sn-toggle"><input type="checkbox" checked={preferences.notificationsEnabled} onChange={(event) => setPreferences((current) => ({ ...current, notificationsEnabled: event.target.checked }))} /><span>允许原生简报通知</span></label>
+      <label className="sn-toggle"><input type="checkbox" checked={preferences.sensitivePreviews} onChange={(event) => setPreferences((current) => ({ ...current, sensitivePreviews: event.target.checked }))} /><span>通知可显示敏感预览</span></label>
+      <button className="sn-primary" type="button" disabled={saving} onClick={() => { void savePreferences(); }}>{saving ? "保存中…" : "保存偏好"}</button>
+    </div>{preferenceError !== undefined && <p className="sn-error">{preferenceError}</p>}</section>
+    {data.trust.domains.length > 0 && <section className="sn-section"><div className="sn-section-title"><div><span>领域分布</span><h2>信任行为可按底座项目追溯</h2></div><small>{data.trust.total} 条活动</small></div><div className="sn-trust-domains">{data.trust.domains.map((stats) => <article key={stats.domain}><DomainMark domain={stats.domain} /><strong>{data.domains.find((domain) => domain.id === stats.domain)?.label ?? stats.domain}</strong><span>自动 {stats.automatic}</span><span>人工 {stats.manual}</span><span>退回 {stats.rejected}</span><span>待处理 {stats.pending + stats.failed}</span><span>阻止 {stats.prohibited}</span></article>)}</div></section>}
+  </div>;
+}
+
 export function builtinNexusModules(): readonly NexusModuleDescriptor[] {
   return [
     { id: "nexus:today", apiVersion: 1, title: "数据面板", route: "today", icon: "◫", group: "home", order: 0, scope: "root", page: TodayPage },
     { id: "nexus:search", apiVersion: 1, title: "搜索", route: "search", icon: "⌕", group: "home", order: 10, scope: "root", page: SearchPage, available: ({ data }) => data.domains.some((domain) => domain.searchEnabled) },
-    { id: "nexus:review", apiVersion: 1, title: "待我处理", route: "review", icon: "◇", group: "home", order: 20, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined },
-    { id: "nexus:apps", apiVersion: 1, title: "应用", route: "apps", icon: "▦", group: "home", order: 30, scope: "root", page: AppsPage }
+    { id: "nexus:activity", apiVersion: 1, title: "活动", route: "activity", icon: "≋", group: "home", order: 20, scope: "root", page: ActivityPage },
+    { id: "nexus:review", apiVersion: 1, title: "待我处理", route: "review", icon: "◇", group: "home", order: 30, scope: "root", page: ReviewPage, badge: ({ data }) => data.drafts.filter((draft) => draft.state === "pending").length || undefined },
+    { id: "nexus:memory", apiVersion: 1, title: "记忆", route: "memory", icon: "◌", group: "home", order: 40, scope: "root", page: MemoryPage },
+    { id: "nexus:trust", apiVersion: 1, title: "信任中心", route: "trust", icon: "◉", group: "home", order: 50, scope: "root", page: TrustPage, badge: ({ data }) => data.trust.failed || undefined },
+    { id: "nexus:apps", apiVersion: 1, title: "应用", route: "apps", icon: "▦", group: "home", order: 60, scope: "root", page: AppsPage }
   ];
 }
 
