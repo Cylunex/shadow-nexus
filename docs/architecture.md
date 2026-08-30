@@ -31,7 +31,16 @@ The stock `web` profile must remain available without the Nexus bundle. Root own
 
 The query parameters `surface` and `view` are the durable browser navigation state. Nexus defaults to `surface=nexus` and `view=today`; browser back/forward and refresh preserve explicit selections. DSH remains the sole owner of current Session selection. The workbench currently follows that selection explicitly and labels the policy instead of silently borrowing the last Session.
 
-Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Now, Search, Review, Apps, and projected domain pages use the same versioned registration contract as external client plugins. Search fans out only to declared Search Surfaces and renders their generic item projection; Apps opens the Catalog-projected domain application and does not duplicate its full UI as a native Nexus page. Registrations have namespaced IDs, unique routes, deterministic ordering, availability and badge hooks, and effect-scoped disposal. A removed active module falls back to Now.
+Nexus provides the `ctx.shadowNexus.registerModule()` service. Built-in Dashboard, Search, Review, Apps, and projected domain pages use the same versioned registration contract as external client plugins. Search fans out only to declared Search Surfaces and renders their generic item projection; Apps opens the Catalog-projected domain application and does not duplicate its full UI as a native Nexus page. Registrations have namespaced IDs, unique routes, deterministic ordering, availability and badge hooks, and effect-scoped disposal. A removed active module falls back to Dashboard.
+
+## Cross-domain dashboard
+
+The default `view=today` route is a read-model dashboard, not a new domain. It combines connection state,
+up to eight runtime-declared metrics per Summary Surface, current suggestions, aggregate signals and recent
+Proposal receipts. The browser receives only those display fields; raw Summary responses remain inside the
+Host. A domain with no multi-metric declaration still renders its primary metric, and an unavailable domain
+degrades independently without hiding other projects. Adding or removing a domain changes the compiled
+runtime projection rather than the Nexus UI source.
 
 Installed domain UI code must enter through a trusted DSH Client plugin. A domain manifest may describe a Surface but never names remotely executed JavaScript.
 
@@ -40,10 +49,10 @@ Installed domain UI code must enter through a trusted DSH Client plugin. A domai
 Nexus does not implement a second login inside DSH. The dedicated public Nexus origin must protect the
 entire DSH surface (HTML, plugin assets, HTTP APIs, and WebSockets) with Shadow Identity at the reverse
 proxy, while the DSH upstream listens on loopback only. The proxy must strip client-supplied identity headers
-before setting the trusted actor header used for L3/L4 receipts. This is still only an access gate: every
+before setting the trusted actor header used for L3 receipts. This is still only an access gate: every
 domain adapter uses its own server-side Agent Bearer and every domain rechecks scope plus resource grants.
 A trusted-LAN literal-IP bypass, when desired, is deployment policy and must not apply to public hostnames
-or forwarded traffic; such requests cannot execute L3/L4 operations without a trusted actor.
+or forwarded traffic; such requests cannot execute L3 operations without a trusted actor, and L4 remains prohibited.
 
 ## Unified interaction path
 
@@ -66,9 +75,9 @@ turn; it never invokes a domain mutation directly.
 4. A read-only discussion returns inline with no Proposal. An explicit fact-saving intent produces one or more inline Proposals; `/ask` and `/record` are optional routing overrides, not separate modes.
 5. The DSH result, rather than local keyword rules, decides the domain fan-out and review fields. A batch may contain up to 200 independent proposals and may repeat a domain.
 6. Nexus links equivalent pending Nexus and domain Proposals by stable declared fields. The domain URI and Revision win for confirmation, while every source reference remains attached for audit.
-7. After explicit confirmation, a model-hidden Host adapter validates and commits the existing or newly created domain draft, stores the canonical receipt, and replaces the inline Proposal with its result.
+7. A model-hidden Host adapter validates the risk against the compiled Platform projection. In the default trusted policy it commits L0-L2 work automatically, stores the canonical receipt, and keeps the result for review. L3 waits for explicit confirmation; L4 is prohibited. Failed automatic execution remains as a retryable review exception.
 
-The interaction prompt permits read-only tools and read-only access to uploaded asset paths. It forbids every domain mutation. A writable domain uses a two-call transaction after confirmation: create an auditable pending review, then commit that exact review through its hidden Host boundary. The unified DSH Profile selects only read/analysis capabilities; draft and formal-write capabilities are not exposed to the model.
+The interaction prompt permits read-only tools and read-only access to uploaded asset paths. It forbids every domain mutation. A writable domain uses a two-call transaction: create an auditable pending review, then commit that exact review through its hidden Host boundary when policy allows. The unified DSH Profile selects only read/analysis capabilities; draft and formal-write capabilities are not exposed to the model.
 
 ## Composer and Conversation
 
@@ -88,11 +97,11 @@ Nexus does not ask for confirmation for every operation.
 | --- | --- | --- |
 | L0 read | summaries, search, today projection | automatic |
 | L1 reversible append | bookmark, travel idea, ordinary note | automatic after adapter validation, with receipt |
-| L2 sensitive fact | health measurement, ledger transaction, ambiguous classification | Review |
+| L2 sensitive fact | health measurement, ledger transaction | automatic after server-side validation, with receipt and review history |
 | L3 consequential action | external publish, account change, destructive operation | explicit confirmation |
 | L4 protected bulk action | deleting all records, disabling audit | prohibited |
 
-Domain plugins may raise a level but may not lower the platform minimum. An operation that changes meaning because required fields are missing is always routed to Review.
+Domain plugins may raise a level but may not lower the platform minimum. The model may also raise risk, but the Host recomputes the effective level from the compiled runtime and never accepts a model downgrade. An operation that changes meaning because required fields are missing is routed to Review. `SHADOW_NEXUS_EXECUTION_POLICY=review-first` is the fail-closed recovery mode.
 
 ## Failure and ownership rules
 

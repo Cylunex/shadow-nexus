@@ -5,6 +5,55 @@ export type NexusView = "today" | "capture" | "review" | DomainId;
 export type DraftState = "pending" | "approved" | "rejected";
 export type RiskLevel = "low" | "medium" | "high";
 export type ProposalMatch = "new" | "linked" | "existing";
+export type DraftDecisionMode = "automatic" | "manual";
+export type DraftReviewReason = "high-risk" | "policy" | "execution-failed" | "prohibited";
+
+export interface DomainMetric {
+  readonly id: string;
+  readonly label: string;
+  readonly value: string;
+  readonly detail?: string;
+  readonly tone?: "neutral" | "good" | "attention" | "warning";
+}
+
+export type QuickActionFieldType = "hidden" | "decimal" | "integer" | "text" | "date" | "datetime" | "select";
+
+export interface NexusQuickActionField {
+  readonly id: string;
+  readonly label: string;
+  readonly type: QuickActionFieldType;
+  readonly required: boolean;
+  readonly default?: string;
+  readonly placeholder?: string;
+  readonly unit?: string;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly step?: number;
+  readonly maxLength?: number;
+  readonly options?: readonly { readonly value: string; readonly label: string }[];
+}
+
+export interface NexusQuickAction {
+  readonly id: string;
+  readonly domain: DomainId;
+  readonly title: string;
+  readonly description: string;
+  readonly intent: string;
+  readonly icon: string;
+  readonly order: number;
+  readonly risk: RiskLevel;
+  readonly submitLabel: string;
+  readonly successMessage: string;
+  readonly summaryTemplate?: string;
+  readonly fields: readonly NexusQuickActionField[];
+}
+
+export interface NexusQuickActionRequest {
+  readonly sessionId?: string;
+  readonly domain: DomainId;
+  readonly actionId: string;
+  readonly fields: Readonly<Record<string, string>>;
+}
 
 export interface DomainSummary {
   readonly id: DomainId;
@@ -13,6 +62,8 @@ export interface DomainSummary {
   readonly status: "ready" | "attention" | "offline";
   readonly metric: string;
   readonly detail: string;
+  readonly metrics?: readonly DomainMetric[];
+  readonly quickActions?: readonly NexusQuickAction[];
   readonly icon: string;
   readonly color: string;
   readonly order: number;
@@ -116,6 +167,9 @@ export interface CaptureDraft {
   readonly updatedAt?: string;
   readonly attachmentRefs?: readonly string[];
   readonly receipt?: string;
+  readonly decisionMode?: DraftDecisionMode;
+  readonly reviewReason?: DraftReviewReason;
+  readonly executionError?: string;
 }
 
 export interface NexusBootstrap {

@@ -60,6 +60,7 @@ interface PendingAppCapture {
 interface AppShellBridge {
   getPendingCapture(): string;
   completePendingCapture(captureId: string): void;
+  openSettings?(): void;
 }
 
 function draftAttachment(file: File): DraftAttachment {
@@ -252,7 +253,7 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
     addFiles([...event.dataTransfer.files]);
   }}>
     {result !== undefined && <section className="sn-inline-result">
-      <header><div><span>{result.drafts.length === 0 ? "SHADOW" : `识别到 ${String(result.drafts.length)} 项`}</span><strong>{result.plan.route === "clarify" ? "需要补充信息" : result.drafts.length === 0 ? "已回复" : "写入前请确认"}</strong></div><button type="button" aria-label="收起本次结果" onClick={() => setResult(undefined)}>×</button></header>
+      <header><div><span>{result.drafts.length === 0 ? "SHADOW" : `识别到 ${String(result.drafts.length)} 项`}</span><strong>{result.plan.route === "clarify" ? "需要补充信息" : result.drafts.length === 0 ? "已回复" : result.drafts.every((draft) => draft.state === "approved") ? "Agent 已处理，保留复核记录" : "有项目需要复核"}</strong></div><button type="button" aria-label="收起本次结果" onClick={() => setResult(undefined)}>×</button></header>
       {result.plan.response.trim() !== "" && <p>{result.plan.response}</p>}
       {result.drafts.length > 0 && <div className="sn-inline-proposals">{result.drafts.map((draft) => <DraftCard key={draft.id} draft={draft} sourceTitle={draft.origin === "domain" ? "已关联领域草稿" : "当前输入"} target={domains.find((domain) => domain.id === draft.domain)} siblingCount={result.drafts.length} reload={reload} compact onUpdated={updateDraft} />)}</div>}
     </section>}
@@ -293,7 +294,7 @@ function AssistantBar({ sessionId, sessionTitle, contextLabel, assetUploadEnable
         <button type="button" aria-label={`移除 ${attachment.file.name || "附件"}`} disabled={busy} onClick={() => removeAttachment(attachment.key)}>×</button>
       </article>)}
     </div>}
-    <small>Shadow 先理解再行动；任何领域变更都会先展示 Proposal。用 /ask 强制只聊，用 /record 强制记录。</small>
+    <small>Shadow 先理解再行动；低至中风险操作自动完成并保留回执，高影响与失败例外进入复核。用 /ask 强制只聊，用 /record 强制记录。</small>
     {error !== undefined && <p>{error}</p>}
   </section>;
 }
@@ -360,6 +361,7 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     label,
     modules: available.filter((module) => module.group === group)
   })).filter((item) => item.modules.length > 0);
+  const appShell = (globalThis as typeof globalThis & { readonly ShellBridge?: AppShellBridge }).ShellBridge;
 
   return <div className="sn-app">
     <aside className="sn-sidebar">
@@ -376,7 +378,7 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
         </section>)}
       </nav>
       <button className="sn-conversation-entry" type="button" onClick={showConversation}><i>⌁</i><span>对话</span><small>{sessionId === undefined ? "先选择工作台会话" : `在「${sessionTitle ?? sessionId}」中继续`}</small></button>
-      <footer><span className="sn-orbit"><i /></span><div><strong>{sessionTitle ?? "Shadow"}</strong><small>{loading ? "同步中" : error === undefined ? sessionId === undefined ? "等待选择 DSH Session" : "工作台会话已连接" : "连接异常"}</small></div></footer>
+      <footer><span className="sn-orbit"><i /></span><div><strong>{sessionTitle ?? "Shadow"}</strong><small>{loading ? "同步中" : error === undefined ? sessionId === undefined ? "等待选择 DSH Session" : "工作台会话已连接" : "连接异常"}</small></div>{appShell?.openSettings !== undefined && <button className="sn-device-settings" type="button" title="平台与设备设置" onClick={() => appShell.openSettings?.()}>⚙</button>}</footer>
     </aside>
     <main className="sn-main">
       <header className="sn-workspace-session">

@@ -5,7 +5,7 @@ import { dirname } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 import { AssetGatewayError, type AssetGateway } from "./assets.js";
-import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, NexusContextCreate, NexusContextPack, NexusSuggestion, ReviewRequest, SuggestionAction } from "./contracts.js";
+import type { BatchReviewRequest, CaptureDraft, CaptureRequest, NexusAssetAttachment, NexusAssetUploadInit, NexusContextCreate, NexusContextPack, NexusQuickActionRequest, NexusSuggestion, ReviewRequest, SuggestionAction } from "./contracts.js";
 import { DomainGatewayError, type DomainGateway } from "./domains.js";
 import { createAnalyzedDrafts, createBootstrap, reclassifyStoredDraft, reviewDraft } from "./projection.js";
 import { upsertProposal } from "./proposals.js";
@@ -215,10 +215,49 @@ async function syncFederatedDrafts(state: NexusState, domains: DomainGateway): P
   const discovered = await domains.discoverDrafts();
   let changed = false;
   for (const draft of discovered) {
-    const result = upsertProposal(state.drafts, draft);
+    const result = upsertProposal(state.drafts, withExecutionPolicy(draft, domains));
     changed ||= result.changed;
+    const current = withExecutionPolicy(result.draft, domains);
+    const executed = await executeTrustedDraft(current, domains);
+    if (executed !== result.draft) {
+      state.drafts.set(executed.id, executed);
+      changed = true;
+    }
   }
   if (changed) await state.persist();
+}
+
+function withExecutionPolicy(draft: CaptureDraft, domains: DomainGateway): CaptureDraft {
+  const policy = domains.policyFor(draft);
+  if (policy.mode === "automatic") {
+    if (draft.risk === policy.risk && draft.reviewReason === undefined && draft.executionError === undefined) return draft;
+    const { reviewReason: _reviewReason, executionError: _executionError, ...rest } = draft;
+    return { ...rest, risk: policy.risk };
+  }
+  const reviewReason = policy.mode === "prohibited" ? "prohibited" : policy.risk === "high" ? "high-risk" : "policy";
+  if (draft.risk === policy.risk && draft.reviewReason === reviewReason
+    && (policy.mode !== "prohibited" || draft.confirmable === false)) return draft;
+  return {
+    ...draft,
+    risk: policy.risk,
+    reviewReason,
+    ...(policy.mode === "prohibited" ? { confirmable: false } : {})
+  };
+}
+
+async function executeTrustedDraft(draft: CaptureDraft, domains: DomainGateway): Promise<CaptureDraft> {
+  if (draft.state !== "pending" || draft.confirmable === false || domains.policyFor(draft).mode !== "automatic") return draft;
+  try {
+    const receipt = await domains.createDraft(draft);
+    const { reviewReason: _reviewReason, executionError: _executionError, ...reviewed } = reviewDraft(draft, "approve", new Date(), receipt);
+    return { ...reviewed, decisionMode: "automatic" };
+  } catch (error) {
+    return {
+      ...draft,
+      reviewReason: "execution-failed",
+      executionError: error instanceof Error ? error.message : "自动执行失败，请在复核页重试。"
+    };
+  }
 }
 
 function visibleSuggestions(items: readonly NexusSuggestion[], state: NexusState, now: Date): readonly NexusSuggestion[] {
@@ -360,9 +399,35 @@ export async function handleNexusRequest(
         attachments.flatMap((attachment) => attachment === undefined ? [] : [attachment.referenceUri]),
         new Set(domains.runtime.domains.map((domain) => domain.id))
       );
-      const created = proposed.map((draft) => upsertProposal(state.drafts, draft).draft);
+      const created: CaptureDraft[] = [];
+      for (const draft of proposed) {
+        const current = withExecutionPolicy(upsertProposal(state.drafts, withExecutionPolicy(draft, domains)).draft, domains);
+        const executed = await executeTrustedDraft(current, domains);
+        state.drafts.set(executed.id, executed);
+        created.push(executed);
+      }
       await state.persist();
       send(response, 201, created);
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/shadow-nexus/quick-actions/execute") {
+      const input = await readJson(request) as Partial<NexusQuickActionRequest>;
+      if (typeof input.domain !== "string" || typeof input.actionId !== "string"
+        || typeof input.fields !== "object" || input.fields === null || Array.isArray(input.fields)
+        || (input.sessionId !== undefined && typeof input.sessionId !== "string")) {
+        throw new RequestError(400, "快捷动作请求无效。");
+      }
+      const proposed = domains.quickActionDraft({
+        domain: input.domain,
+        actionId: input.actionId,
+        fields: input.fields as Readonly<Record<string, string>>,
+        ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId })
+      });
+      const current = withExecutionPolicy(upsertProposal(state.drafts, withExecutionPolicy(proposed, domains)).draft, domains);
+      const executed = await executeTrustedDraft(current, domains);
+      state.drafts.set(executed.id, executed);
+      await state.persist();
+      send(response, 201, executed);
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/review") {
@@ -372,9 +437,11 @@ export async function handleNexusRequest(
       const current = state.drafts.get(input.draftId);
       if (current === undefined || current.sessionId !== input.sessionId) throw new RequestError(404, "没有找到这个草稿。");
       if (input.decision === "approve" && current.confirmable === false) throw new RequestError(409, "领域已将这个 Proposal 标记为不可确认。");
+      if (input.decision === "approve" && domains.policyFor(current).mode === "prohibited") throw new RequestError(409, "受保护的操作不能执行。");
       const receipt = input.decision === "approve" ? await domains.createDraft(current, confirmationActor(request)) : undefined;
       if (input.decision === "reject") await domains.rejectDraft(current);
-      const updated = reviewDraft(current, input.decision, new Date(), receipt);
+      const { reviewReason: _reviewReason, executionError: _executionError, ...reviewed } = reviewDraft(current, input.decision, new Date(), receipt);
+      const updated: CaptureDraft = { ...reviewed, decisionMode: "manual" };
       state.drafts.set(updated.id, updated);
       await state.persist();
       send(response, 200, updated);
@@ -391,9 +458,11 @@ export async function handleNexusRequest(
       const updated: CaptureDraft[] = [];
       for (const current of pending) {
         if (input.decision === "approve" && current.confirmable === false) throw new RequestError(409, "组内包含不可确认的 Proposal。");
+        if (input.decision === "approve" && domains.policyFor(current).mode === "prohibited") throw new RequestError(409, "组内包含受保护的操作。");
         const receipt = input.decision === "approve" ? await domains.createDraft(current, confirmationActor(request)) : undefined;
         if (input.decision === "reject") await domains.rejectDraft(current);
-        const result = reviewDraft(current, input.decision, new Date(), receipt);
+        const { reviewReason: _reviewReason, executionError: _executionError, ...reviewed } = reviewDraft(current, input.decision, new Date(), receipt);
+        const result: CaptureDraft = { ...reviewed, decisionMode: "manual" };
         state.drafts.set(result.id, result);
         updated.push(result);
         await state.persist();

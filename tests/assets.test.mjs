@@ -75,7 +75,7 @@ test("uploads images and files through Asset and exposes a read-only conversatio
   assert.equal(attachment.filename, "report.pdf");
   assert.match(attachment.referenceUri, /^shadow:\/\/nexus\/conversations\/[0-9a-f]{32}\/attachments\//u);
   assert.equal(await readFile(attachment.conversationPath, "utf8"), "hello");
-  assert.equal((await stat(attachment.conversationPath)).mode & 0o777, 0o400);
+  assert.equal((await stat(attachment.conversationPath)).mode & 0o777, process.platform === "win32" ? 0o444 : 0o400);
   assert.equal(calls[0]?.authorization, "Bearer service-secret");
   assert.equal(calls.at(-1)?.authorization, "Bearer service-secret");
   assert.ok(calls.every((call) => !call.url.includes("short-lived-secret")));

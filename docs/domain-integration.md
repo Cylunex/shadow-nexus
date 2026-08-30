@@ -43,9 +43,68 @@ Nexus 只从 `SHADOW_NEXUS_RUNTIME_FILE` 加载经过 Platform 编译的投影�
 Surface 只描述数据投影，不允许加载远程 JavaScript。需要定制交互时，领域提供受信任的 DSH
 Client Plugin，并通过 `ctx.shadowNexus.registerModule()` 注册；卸载时必须随 Cordis effect 清理。
 
+### 数据面板指标
+
+`summary.display.metric_pointer` 与 `detail_pointer` 是兼容所有领域的主摘要。领域还可以声明
+`metrics`，让默认数据面板一次展示多个高频只读指标；Nexus 不识别健康、账本或旅行等业务字段，
+只执行声明的 JSON Pointer：
+
+```json
+{
+  "metric_pointer": "/summary/primary",
+  "detail_pointer": "/summary/detail",
+  "metrics": [
+    {
+      "id": "primary",
+      "label": "今日",
+      "value_pointer": "/summary/primary",
+      "detail_pointer": "/summary/detail",
+      "unit": "项",
+      "tone": "neutral"
+    },
+    {
+      "id": "trend",
+      "label": "趋势",
+      "value_pointer": "/summary/trend",
+      "tone": "good"
+    }
+  ]
+}
+```
+
+每个领域最多投影 8 个指标，面板卡片优先显示前 4 个；缺失或非标量值会被忽略。`tone` 只允许
+`neutral`、`good`、`attention`、`warning`，它仅影响视觉提示，不参与业务判断。原始响应、凭据和
+未声明字段不会发送到浏览器。领域项目继续拥有指标口径、时间范围和刷新语义，Platform 只负责
+把已审查的 Surface 编译进 Deployment。
+
+### 快捷操作
+
+`quick-action` 把高频 Capture 表单直接投影到 Nexus 首页。它不是第二套领域 API，也不能引用
+Capture 之外的新写操作：Platform 会在构建期验证 capability、operation、risk 与 intent 前缀
+一致。隐藏字段（例如记录类型、币种和当前时间）由 Nexus Host 解析，浏览器不能覆盖。
+
+```yaml
+- id: weigh
+  type: quick-action
+  capability: health.records.draft
+  operation_id: create_nexus_health_review
+  risk_level: L2
+  action:
+    title: 称重
+    intent: health.metric.weight
+    submit_label: 记录体重
+    fields:
+      - { id: recordType, type: hidden, default: metric }
+      - { id: weightKg, label: 体重, type: decimal, required: true, min: 20, max: 400, unit: kg }
+      - { id: effectiveDate, label: 日期, type: date, required: true, default: $today }
+```
+
+L0-L2 表单通过服务器校验后按可信策略自动创建并提交领域 Review，同时保留完整 receipt；业务
+校验失败、连接故障或字段不完整会进入复核队列。L3 必须显式确认，L4 永不执行。
+
 ## 标准审核协议
 
-需要正式写入的领域由自己实现：
+需要正式写入的领域由自己实现；Nexus 默认信任 Agent 自动完成 L0-L2 的“创建审核对象 + 提交”事务，并把回执保留在复核历史中：
 
 ```text
 POST /nexus/reviews
@@ -80,9 +139,9 @@ POST /nexus/reviews/{review_id}/reject
 Nexus 只保存 Proposal 状态和领域引用。确认已有领域草稿时必须提交同一个 `review_id`；重复确认
 返回 replay，不重复创建事实。用户拒绝后由领域完成可恢复撤销或记录拒绝审计。
 
-L3/L4 操作还要求短时 `ConfirmationReceipt`。Nexus 只在受保护请求具有可信 actor 时签发，并
-绑定投影中的 plugin/capability/tool/effect、规范参数摘要与资源 URI；领域服务验签并原子消费
-nonce。提示词、按钮或 DSH Approval 本身都不是领域写权限。
+L3 操作还要求短时 `ConfirmationReceipt`。Nexus 只在受保护请求具有可信 actor 时签发，并绑定
+投影中的 plugin/capability/tool/effect、规范参数摘要与资源 URI；领域服务验签并原子消费 nonce。
+L4 在 Host Policy 层直接禁止。提示词、按钮或 DSH Approval 本身都不是领域写权限。
 
 ## Capture 路由
 

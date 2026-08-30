@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -11,6 +12,7 @@ import {
   createDraft,
   createDrafts,
   createNexusState,
+  handleNexusRequest,
   nexusBasePathFromPluginUrl,
   reclassifyStoredDraft,
   reviewDraft
@@ -117,6 +119,91 @@ test("review creates a receipt and cannot be repeated", () => {
   assert.equal(approved.state, "approved");
   assert.match(approved.receipt ?? "", /^preview:alpha:/u);
   assert.throws(() => reviewDraft(approved, "reject"), /已经处理/u);
+});
+
+test("automatically executes trusted proposals and keeps a review receipt", async (context) => {
+  const state = createNexusState();
+  let commits = 0;
+  const domains = {
+    runtime: { domains: [{ id: "alpha" }] },
+    policyFor: () => ({ risk: "medium", mode: "automatic" }),
+    quickActionDraft: ({ sessionId = "quick-action:alpha", fields }) => ({
+      ...proposal(), id: "quick-alpha", captureGroupId: "quick-alpha", sessionId,
+      text: "快捷记录", summary: "快捷记录", fields: { value: fields.value }, risk: "medium"
+    }),
+    createDraft: async (draft) => {
+      if (draft.summary === "自动失败") throw new Error("领域暂时不可用。");
+      commits += 1;
+      return "shadow://alpha/records/automatic";
+    },
+    rejectDraft: async () => {},
+    reconcileConfirmedDraft: async () => undefined,
+    discoverDrafts: async () => [],
+    discoverSuggestions: async () => [],
+    search: async () => ({ query: "", items: [], searchedDomains: [], unavailableDomains: [] }),
+    project: async () => ({ mode: "connected", domains: [], signals: [] })
+  };
+  const assets = { configured: false };
+  const server = createServer((request, response) => { void handleNexusRequest(request, response, state, domains, assets); });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+  const address = server.address();
+  assert.equal(typeof address, "object");
+  const response = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/capture`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "session-a",
+      text: "保存这条记录",
+      analysis: {
+        version: 2,
+        interactionId: "interaction_auto-12345678",
+        route: "propose",
+        response: "已处理。",
+        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "自动处理", risk: "low", fields: { value: "1" } }]
+      }
+    })
+  });
+  assert.equal(response.status, 201);
+  const [result] = await response.json();
+  assert.equal(commits, 1);
+  assert.equal(result.state, "approved");
+  assert.equal(result.risk, "medium");
+  assert.equal(result.decisionMode, "automatic");
+  assert.equal(result.receipt, "shadow://alpha/records/automatic");
+  assert.equal(state.drafts.get(result.id)?.receipt, result.receipt);
+
+  const quickResponse = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/quick-actions/execute`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId: "session-a", domain: "alpha", actionId: "quick-value", fields: { value: "3" } })
+  });
+  assert.equal(quickResponse.status, 201);
+  const quickResult = await quickResponse.json();
+  assert.equal(quickResult.state, "approved");
+  assert.equal(quickResult.decisionMode, "automatic");
+  assert.equal(quickResult.receipt, "shadow://alpha/records/automatic");
+
+  const failedResponse = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/capture`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "session-a",
+      text: "保存另一条记录",
+      analysis: {
+        version: 2,
+        interactionId: "interaction_fail-12345678",
+        route: "propose",
+        response: "稍后复核。",
+        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "自动失败", risk: "low", fields: { value: "2" } }]
+      }
+    })
+  });
+  assert.equal(failedResponse.status, 201);
+  const [failed] = await failedResponse.json();
+  assert.equal(failed.state, "pending");
+  assert.equal(failed.reviewReason, "execution-failed");
+  assert.equal(failed.executionError, "领域暂时不可用。");
 });
 
 test("accepts same-origin JSON and rejects cross-site requests", () => {

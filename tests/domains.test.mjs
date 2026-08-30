@@ -39,10 +39,25 @@ function runtime() {
       presentation: { short_id: "alpha", title: "Alpha", caption: "Alpha facts", icon: "alpha", color: "#112233", order: 10 },
       connection: { base_url_env: "ALPHA_URL", credential_env: "ALPHA_TOKEN", context_env: {} },
       surfaces: [
-        { id: "today", type: "summary", operation_id: "alpha_summary", operation: operation("alpha_summary", "GET", "/alpha/summary", "alpha.summary.read"), display: { metric_pointer: "/metric", detail_pointer: "/detail" } },
+        { id: "today", type: "summary", operation_id: "alpha_summary", operation: operation("alpha_summary", "GET", "/alpha/summary", "alpha.summary.read"), display: {
+          metric_pointer: "/metric", detail_pointer: "/detail",
+          metrics: [
+            { id: "records", label: "记录", value_pointer: "/metric", unit: "项", tone: "neutral" },
+            { id: "score", label: "评分", value_pointer: "/score", detail_pointer: "/score_detail", tone: "good" },
+            { id: "missing", label: "缺失", value_pointer: "/not_found" }
+          ]
+        } },
         { id: "suggestions", type: "suggestions", operation_id: "alpha_suggestions", operation: operation("alpha_suggestions", "GET", "/alpha/suggestions", "alpha.suggestions.read") },
         { id: "search", type: "search", operation_id: "search_alpha", operation: operation("search_alpha", "POST", "/alpha/search", "alpha.records.search"), display: { collection_pointer: "/items", item_title_pointer: "/title", item_detail_pointer: "/summary", item_reference_pointer: "/resource_uri" } },
         { id: "capture", type: "capture", operation_id: "create_alpha_review", operation: create, risk_level: "L2", intent_prefixes: ["alpha.record"] },
+        { id: "quick-value", type: "quick-action", operation_id: "create_alpha_review", operation: create, risk_level: "L2", action: {
+          title: "Quick value", description: "Record one bounded value", intent: "alpha.record.quick", icon: "value", order: 5,
+          submit_label: "Save", success_message: "Saved", summary_template: "Quick value {value}",
+          fields: [
+            { id: "kind", label: "Kind", type: "hidden", required: true, default: "metric" },
+            { id: "value", label: "Value", type: "decimal", required: true, minimum: 1, maximum: 10, step: 0.1 }
+          ]
+        } },
         { id: "review", type: "review", risk_level: "L2", intent_prefixes: ["alpha.record"] }
       ],
       review: { protocol: "shadow.review.v1", mode: "commit", operations: { list, create, commit, reject } },
@@ -75,7 +90,7 @@ async function fixtureServer() {
     const body = chunks.length === 0 ? undefined : JSON.parse(Buffer.concat(chunks).toString("utf8"));
     calls.push({ method: request.method, url: request.url, headers: request.headers, body });
     response.setHeader("content-type", "application/json");
-    if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records" }));
+    if (request.method === "GET" && request.url === "/alpha/summary") return response.end(JSON.stringify({ metric: 7, detail: "Seven records", score: 92, score_detail: "On target" }));
     if (request.method === "GET" && request.url === "/alpha/suggestions") return response.end(JSON.stringify({ items: [{
       protocol: "shadow.suggestion.v1", suggestion_id: "sug_alpha_weekly_12345678", domain: "alpha",
       rule_id: "alpha.weekly-review", dedupe_key: "alpha:weekly:2026-W35", title: "Alpha weekly",
@@ -144,11 +159,19 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
   const projection = await gateway.project(new Date("2026-08-26T08:00:00Z"));
   assert.deepEqual(projection.domains.map((item) => item.id), ["alpha", "beta"]);
   assert.equal(projection.domains[0].metric, "7");
+  assert.deepEqual(projection.domains[0].metrics, [{ id: "records", label: "记录", value: "7 项", tone: "neutral" }, { id: "score", label: "评分", value: "92", detail: "On target", tone: "good" }]);
   assert.equal(projection.domains[0].intentPrefixes[0], "alpha.record");
   assert.equal(projection.domains[0].searchEnabled, true);
   assert.equal(projection.domains[0].appUrl, "https://alpha.example.test/");
+  assert.equal(projection.domains[0].quickActions[0].title, "Quick value");
   assert.equal(projection.domains[1].status, "ready");
   assert.equal(projection.domains[1].metric, "已连接");
+  const quick = gateway.quickActionDraft({ sessionId: "session-a", domain: "alpha", actionId: "quick-value", fields: { value: "7.5" } }, new Date("2026-08-26T08:00:00Z"));
+  assert.equal(quick.summary, "Quick value 7.5");
+  assert.deepEqual(quick.fields, { kind: "metric", value: "7.5", source: "shadow-nexus-quick-action", original: "Quick value 7.5" });
+  assert.throws(() => gateway.quickActionDraft({ domain: "alpha", actionId: "quick-value", fields: { kind: "tampered", value: "7.5" } }), /隐藏字段/u);
+  assert.throws(() => gateway.quickActionDraft({ domain: "alpha", actionId: "quick-value", fields: { value: 7.5 } }), /格式无效/u);
+  assert.throws(() => gateway.quickActionDraft({ domain: "alpha", actionId: "quick-value", fields: { value: "99" } }), /超出允许范围/u);
 
   const search = await gateway.search("needle", 10);
   assert.deepEqual(search.searchedDomains, ["alpha"]);
@@ -177,6 +200,17 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
     source_refs: []
   });
   assert.deepEqual(fixture.calls.find((call) => call.url === "/alpha/reviews/created/commit")?.body, { revision: 1 });
+});
+
+test("uses runtime risk as the floor and trusts L0-L2 by default", () => {
+  const value = runtime();
+  const trusted = new HttpDomainGateway(1_000, value, "trusted");
+  assert.deepEqual(trusted.policyFor(draft("alpha")), { risk: "medium", mode: "automatic" });
+  assert.deepEqual(trusted.policyFor({ ...draft("beta"), risk: "high" }), { risk: "high", mode: "review" });
+  assert.deepEqual(new HttpDomainGateway(1_000, value, "review-first").policyFor(draft("beta")), { risk: "low", mode: "review" });
+
+  value.domains[0].review.operations.commit.risk_level = "L4";
+  assert.deepEqual(trusted.policyFor(draft("alpha")), { risk: "high", mode: "prohibited" });
 });
 
 test("commits and rejects a federated review by its opaque domain id", async (context) => {

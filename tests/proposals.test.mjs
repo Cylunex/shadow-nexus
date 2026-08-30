@@ -59,3 +59,13 @@ test("returns an approved semantic match instead of reopening it", () => {
   assert.equal(result.draft.id, approved.id);
   assert.equal(result.draft.match, "existing");
 });
+
+test("never lowers the risk of an equivalent pending proposal", () => {
+  const drafts = new Map();
+  const base = analyzed("session-a", "interaction_alpha-risk", { value: "same" });
+  const high = { ...base, id: "high", risk: "high" };
+  const low = { ...base, id: "low", risk: "low" };
+  upsertProposal(drafts, high);
+  const result = upsertProposal(drafts, low);
+  assert.equal(result.draft.risk, "high");
+});

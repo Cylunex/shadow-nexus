@@ -1,5 +1,11 @@
 import type { CaptureDraft } from "./contracts.js";
 
+const riskRank = { low: 0, medium: 1, high: 2 } as const;
+
+function highestRisk(...values: readonly CaptureDraft["risk"][]): CaptureDraft["risk"] {
+  return values.reduce<CaptureDraft["risk"]>((highest, value) => riskRank[value] > riskRank[highest] ? value : highest, "low");
+}
+
 function compact(value: string | undefined): string {
   return (value ?? "")
     .toLocaleLowerCase()
@@ -53,7 +59,7 @@ export function mergeProposal(existing: CaptureDraft, incoming: CaptureDraft, no
     ...existing,
     summary: authoritative.summary,
     fields: authoritative.fields,
-    risk: authoritative.risk,
+    risk: highestRisk(existing.risk, incoming.risk, authoritative.risk),
     ...(origin === undefined ? {} : { origin }),
     ...(domainDraftRef === undefined ? {} : { domainDraftRef }),
     ...(domainRevision === undefined ? {} : { domainRevision }),
