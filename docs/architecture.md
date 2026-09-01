@@ -80,6 +80,7 @@ turn; it never invokes a domain mutation directly.
 3. Nexus waits for the completed DSH turn and validates its versioned `shadow.nexus.plan.v1`; prompt admission is never treated as completion. A structured `shadow_nexus_plan` tool-call block is preferred when available. Otherwise the entire assistant output must be one exact JSON frame; Nexus does not search arbitrary prose for a JSON substring.
 4. A read-only discussion returns inline with no Proposal. An explicit fact-saving intent produces one or more inline Proposals; `/ask` and `/record` are optional routing overrides, not separate modes.
 5. The DSH result, rather than local keyword rules, decides the domain fan-out and review fields. A batch may contain up to 200 independent proposals and may repeat a domain.
+   Before returning the plan, the shared interaction policy audits every explicit fact in the original text and attachments. Complete facts may continue while one incomplete sibling fact is clarified through a `mixed` response; an incomplete optional field never blocks or triggers confirmation for the rest. Food and payment evidence from one order can therefore fan out independently to Health and Ledger without copying unrelated attachments.
 6. Nexus links equivalent pending Nexus and domain Proposals by stable declared fields. The domain URI and Revision win for confirmation, while every source reference remains attached for audit.
 7. A model-hidden Host adapter validates the risk against the compiled Platform projection. In the default trusted policy it commits L0-L2 work automatically, stores the canonical receipt, and keeps the result for review. L3 waits for explicit confirmation; L4 is prohibited. Failed automatic execution remains as a retryable review exception.
 
@@ -118,6 +119,7 @@ Domain plugins may raise a level but may not lower the platform minimum. The mod
 ## Failure and ownership rules
 
 - A session message is not proof of a domain write.
+- A successful write claim is rendered only from the Host result; the model's pre-execution response may describe recognition but never completion.
 - A draft is not a fact.
 - Only a domain receipt proves a successful commit.
 - Retries reuse an idempotency key derived from the capture event and target capability.

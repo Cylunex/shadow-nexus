@@ -17,6 +17,7 @@ export * from "./domains.js";
 export * from "./proposals.js";
 export * from "./projection.js";
 export * from "./plan-contract.js";
+export * from "./interaction-policy.js";
 
 export const name = "shadow-nexus";
 export const inject = ["webServer"];
