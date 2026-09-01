@@ -42,7 +42,7 @@ The source-only DSH `0.1.2-alpha.1` migration assessment is in `docs/dsh-0.1.2-m
 
 ## Shadow Asset attachments
 
-Images and other files use the same Composer upload path. Nexus uploads the original to Shadow Asset, keeps a read-only local view for the active DSH Session, and adds both the stable `shadow://` reference and readable path to the conversation prompt. Any generated Proposal stores the stable attachment references. The short-lived Asset upload token never enters the browser, Nexus state file, or DSH conversation log.
+Images and other files use the same Composer upload path. Nexus uploads the original to Shadow Asset, keeps a read-only local view for the active DSH Session, and adds both the stable `shadow://` reference and readable path to the conversation prompt. Each generated Proposal explicitly selects only the stable attachment references that belong to that domain fact; unselected files remain conversation context and are not forwarded blindly. The short-lived Asset upload token never enters the browser, Nexus state file, or DSH conversation log.
 
 Configure the host plugin with:
 

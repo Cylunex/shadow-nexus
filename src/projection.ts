@@ -85,6 +85,7 @@ export function createAnalyzedDrafts(
   }
   const createdAt = now.toISOString();
   const groupId = `draft_${analysisId}`;
+  const availableAttachmentRefs = new Set(attachmentRefs);
   return analysis.drafts.map((item, index) => {
     const validDomain = typeof item.domain === "string" && /^[a-z][a-z0-9-]{1,63}$/u.test(item.domain)
       && (installedDomains === undefined || installedDomains.has(item.domain));
@@ -108,6 +109,10 @@ export function createAnalyzedDrafts(
       }
       fields[key] = value;
     }
+    const selectedAttachmentRefs = item.attachmentRefs ?? [];
+    if (selectedAttachmentRefs.some((reference: string) => !availableAttachmentRefs.has(reference))) {
+      throw new Error("DSH 返回了不属于本次交互的附件引用。");
+    }
     return {
       id: `${groupId}_${item.domain}_${String(index + 1)}`,
       captureGroupId: groupId,
@@ -122,7 +127,7 @@ export function createAnalyzedDrafts(
       risk: item.risk,
       fields,
       origin: "nexus",
-      attachmentRefs,
+      ...(selectedAttachmentRefs.length === 0 ? {} : { attachmentRefs: selectedAttachmentRefs }),
       planContract: analysis.contract
     };
   });

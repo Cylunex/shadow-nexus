@@ -15,7 +15,7 @@ function rawPlan(overrides = {}) {
     interactionId,
     route: "propose",
     response: "识别到一条记录。",
-    drafts: [{ domain: "alpha", intent: "alpha.record", summary: "Alpha", risk: "medium", fields: { value: "1" } }],
+    drafts: [{ domain: "alpha", intent: "alpha.record", summary: "Alpha", risk: "medium", fields: { value: "1" }, attachmentRefs: ["shadow://nexus/assets/one"] }],
     ...overrides
   };
 }
@@ -25,6 +25,7 @@ test("parses one complete provider-neutral JSON frame and records provenance", (
   assert.equal(plan?.version, 3);
   assert.equal(plan?.contract.source, "json-frame");
   assert.equal(plan?.contract.provider, "openai");
+  assert.deepEqual(plan?.drafts[0]?.attachmentRefs, ["shadow://nexus/assets/one"]);
 });
 
 test("prefers a structured tool-call block when a provider exposes one", () => {
@@ -49,6 +50,12 @@ test("rejects extracted prose, extra fields, and inconsistent routes", () => {
   assert.equal(intentPlanFromBlocks([{ kind: "text", text: `prefix ${JSON.stringify(rawPlan())}` }], interactionId), undefined);
   assert.throws(() => intentPlanFromBlocks([{ kind: "text", text: JSON.stringify(rawPlan({ extra: true })) }], interactionId), /字段/u);
   assert.throws(() => intentPlanFromBlocks([{ kind: "text", text: JSON.stringify(rawPlan({ route: "answer" })) }], interactionId), /不一致/u);
+});
+
+test("rejects malformed Proposal attachment references", () => {
+  const invalid = rawPlan();
+  invalid.drafts[0].attachmentRefs = ["file:///tmp/private.jpg"];
+  assert.throws(() => intentPlanFromBlocks([{ kind: "text", text: JSON.stringify(invalid) }], interactionId), /attachmentRefs/u);
 });
 
 test("fails closed without a contract and never creates fallback drafts", () => {

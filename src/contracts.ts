@@ -386,6 +386,7 @@ export interface CaptureAnalysisDraft {
   readonly summary: string;
   readonly risk: RiskLevel;
   readonly fields: Readonly<Record<string, string>>;
+  readonly attachmentRefs?: readonly string[];
 }
 
 export interface CaptureAnalysis {

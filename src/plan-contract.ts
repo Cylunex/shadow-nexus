@@ -38,6 +38,18 @@ function exactKeys(value: Readonly<Record<string, unknown>>, expected: readonly 
   }
 }
 
+function exactKeysWithOptional(
+  value: Readonly<Record<string, unknown>>,
+  required: readonly string[],
+  optional: readonly string[],
+  label: string
+): void {
+  const actual = new Set(Object.keys(value));
+  if (required.some((key) => !actual.has(key)) || [...actual].some((key) => !required.includes(key) && !optional.includes(key))) {
+    throw new PlanContractError(`${label}字段不符合协议。`);
+  }
+}
+
 function boundedString(value: unknown, label: string, maximum: number, allowEmpty = false): string {
   if (typeof value !== "string" || value.length > maximum || (!allowEmpty && value.trim() === "")) {
     throw new PlanContractError(`${label}无效。`);
@@ -47,7 +59,7 @@ function boundedString(value: unknown, label: string, maximum: number, allowEmpt
 
 function parseDraft(value: unknown): CaptureAnalysisDraft {
   const item = record(value, "Proposal");
-  exactKeys(item, ["domain", "intent", "summary", "risk", "fields"], "Proposal");
+  exactKeysWithOptional(item, ["domain", "intent", "summary", "risk", "fields"], ["attachmentRefs"], "Proposal");
   const domain = boundedString(item.domain, "Proposal domain", 64);
   if (!/^[a-z][a-z0-9-]{1,63}$/u.test(domain)) throw new PlanContractError("Proposal domain 无效。");
   const intent = boundedString(item.intent, "Proposal intent", 120);
@@ -63,12 +75,23 @@ function parseDraft(value: unknown): CaptureAnalysisDraft {
     }
     fields[key] = raw;
   }
+  let attachmentRefs: readonly string[] | undefined;
+  if (item.attachmentRefs !== undefined) {
+    if (!Array.isArray(item.attachmentRefs) || item.attachmentRefs.length > 8
+      || item.attachmentRefs.some((reference) => typeof reference !== "string"
+        || reference.length > 1_024
+        || !/^shadow:\/\/[a-z][a-z0-9-]{1,63}\/.+/u.test(reference))) {
+      throw new PlanContractError("Proposal attachmentRefs 无效。");
+    }
+    attachmentRefs = [...new Set(item.attachmentRefs as readonly string[])];
+  }
   return {
     domain,
     intent,
     summary: boundedString(item.summary, "Proposal summary", 240).trim(),
     risk: item.risk as CaptureAnalysisDraft["risk"],
-    fields
+    fields,
+    ...(attachmentRefs === undefined ? {} : { attachmentRefs })
   };
 }
 

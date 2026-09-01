@@ -61,6 +61,30 @@ test("uses completed DSH analysis and installed projection as the only routing a
   assert.throws(() => createDrafts(), /关键词路由已停用/u);
 });
 
+test("keeps only attachments selected by each Proposal", () => {
+  const available = ["shadow://nexus/assets/meal", "shadow://nexus/assets/order"];
+  const analysis = {
+    protocol: "shadow.nexus.plan.v1",
+    version: 3,
+    interactionId: "interaction_attachments-1234",
+    route: "propose",
+    response: "已拆分领域事实。",
+    drafts: [
+      { domain: "health", intent: "health.record", summary: "午餐", risk: "low", fields: {}, attachmentRefs: [available[0]] },
+      { domain: "ledger", intent: "ledger.record", summary: "午餐消费", risk: "low", fields: {}, attachmentRefs: [available[1]] },
+      { domain: "alpha", intent: "alpha.record", summary: "无附件", risk: "low", fields: {} }
+    ],
+    contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame" }
+  };
+  const drafts = createAnalyzedDrafts("session-a", "记录午餐", analysis, new Date(), available, new Set(["health", "ledger", "alpha"]));
+  assert.deepEqual(drafts[0].attachmentRefs, [available[0]]);
+  assert.deepEqual(drafts[1].attachmentRefs, [available[1]]);
+  assert.equal(drafts[2].attachmentRefs, undefined);
+
+  const forged = { ...analysis, drafts: [{ ...analysis.drafts[0], attachmentRefs: ["shadow://nexus/assets/forged"] }] };
+  assert.throws(() => createAnalyzedDrafts("session-a", "记录午餐", forged, new Date(), available, new Set(["health"])), /不属于本次交互/u);
+});
+
 test("preserves legacy drafts without silently reclassifying their domain", () => {
   const legacy = { ...proposal(), classificationVersion: undefined, captureGroupId: undefined, domain: "legacy-domain" };
   const migrated = reclassifyStoredDraft(legacy);
