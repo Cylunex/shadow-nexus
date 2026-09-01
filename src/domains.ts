@@ -1099,7 +1099,7 @@ export class HttpDomainGateway implements DomainGateway {
             summary: draft.summary,
             fields: draft.fields,
             source_text: draft.text,
-            source_refs: draft.sourceRefs ?? []
+            source_refs: [...new Set([...(draft.sourceRefs ?? []), ...(draft.attachmentRefs ?? [])])]
           },
           idempotencyKey: draft.id
         });

@@ -223,7 +223,11 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
   assert.equal(discovered[0].domainRevision, 3);
   const suggestions = await gateway.discoverSuggestions();
   assert.equal(suggestions[0].suggestion_id, "sug_alpha_weekly_12345678");
-  assert.equal(await gateway.createDraft(draft("alpha")), "shadow://alpha/records/1");
+  assert.equal(await gateway.createDraft({
+    ...draft("alpha"),
+    sourceRefs: ["shadow://nexus/context/1"],
+    attachmentRefs: ["shadow://nexus/assets/1", "shadow://nexus/context/1"]
+  }), "shadow://alpha/records/1");
   assert.equal(await gateway.createDraft(draft("beta", { source_kind: "url", source_uri: "https://example.test" })), "shadow://beta/captures/1");
   assert.ok(fixture.calls.every((call) => call.headers.authorization?.startsWith("Bearer ")));
   assert.deepEqual(fixture.calls.find((call) => call.url === "/alpha/reviews" && call.method === "POST")?.body, {
@@ -231,7 +235,7 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
     summary: "alpha proposal",
     fields: { value: "8" },
     source_text: "record this",
-    source_refs: []
+    source_refs: ["shadow://nexus/context/1", "shadow://nexus/assets/1"]
   });
   assert.deepEqual(fixture.calls.find((call) => call.url === "/alpha/reviews/created/commit")?.body, { revision: 1 });
 });
