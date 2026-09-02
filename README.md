@@ -6,6 +6,8 @@ The current milestone includes a Host + Browser DSH plugin, a responsive root sh
 
 The conversational and batch capture paths share one business-preservation policy: every explicit fact is checked before routing, optional omissions do not trigger confirmation, complete siblings continue while one incomplete fact is clarified, and model responses cannot claim a write before the Host returns a domain receipt. When Health and Ledger are installed, meal/order inputs are audited as two independent fact groups, with household measures retained as notes and food versus order evidence attached only to the owning domain.
 
+User-authorized food photo estimates are supported with explicit provenance and uncertainty in notes; they are never presented as measured values or confirmed consumption. Missing required facts are asked for, and a reporting timestamp must not be substituted for a purchase timestamp.
+
 Model planning uses the versioned `shadow.nexus.plan.v1` / `shadow.nexus.capture.v1` contracts. Nexus prefers a
 structured tool-call block when a Provider exposes one; the provider-neutral fallback accepts only one complete,
 strictly validated JSON frame. Legacy tagged envelopes remain read-only-compatible, while malformed or missing

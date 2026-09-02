@@ -119,6 +119,7 @@ Domain plugins may raise a level but may not lower the platform minimum. The mod
 ## Failure and ownership rules
 
 - A session message is not proof of a domain write.
+- User-authorized nutrition estimates must identify their photo/order/library basis, uncertainty and unconfirmed leftovers in notes. Required transactional facts are clarified rather than guessed; reporting time is not purchase time.
 - A successful write claim is rendered only from the Host result; the model's pre-execution response may describe recognition but never completion.
 - A draft is not a fact.
 - Only a domain receipt proves a successful commit.

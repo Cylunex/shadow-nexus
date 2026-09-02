@@ -19,12 +19,20 @@ test("requires complete cross-domain capture without unnecessary confirmation", 
   assert.match(rules, /不能因同时记录饮食而漏账/u);
 });
 
-test("preserves notes and refuses invented nutrition estimates", () => {
+test("allows authorized photo estimates while preserving uncertainty", () => {
   const rules = buildNexusProcessingRules([domain("health")]);
   assert.match(rules, /个\/把\/根\/碗.*notes/u);
-  assert.match(rules, /不从照片或份量估算 amount_g、kcal/u);
+  assert.match(rules, /用户允许估算时，可结合照片、订单和食物库估算 amount_g、kcal/u);
+  assert.match(rules, /必须注明估算而非实测、依据、误差/u);
+  assert.match(rules, /不把画面剩余量当完整摄入量/u);
   assert.match(rules, /常规早餐/u);
   assert.doesNotMatch(rules, /Health × Ledger/u);
+});
+
+test("asks for mandatory facts instead of inventing a purchase timestamp", () => {
+  const rules = buildNexusProcessingRules([domain("ledger")]);
+  assert.match(rules, /必填事实必须询问用户，不自行猜填/u);
+  assert.match(rules, /报账时间不得冒充购买时间/u);
 });
 
 test("emits only guidance for capture-enabled installed domains", () => {
