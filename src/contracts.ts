@@ -6,7 +6,7 @@ export type DraftState = "pending" | "approved" | "rejected";
 export type RiskLevel = "low" | "medium" | "high";
 export type ProposalMatch = "new" | "linked" | "existing";
 export type DraftDecisionMode = "automatic" | "manual";
-export type DraftReviewReason = "high-risk" | "policy" | "execution-failed" | "prohibited";
+export type DraftReviewReason = "high-risk" | "policy" | "reconciling" | "execution-failed" | "prohibited";
 export type PlanContractSource = "tool-call" | "json-frame" | "legacy-envelope" | "safe-fallback";
 export type CapabilityMaturity = "not-selected" | "none" | "contract" | "client" | "deployed" | "observed" | "restore-tested" | "failed";
 
@@ -233,7 +233,7 @@ export interface CaptureDraft {
   readonly planContract?: PlanContractMetadata;
 }
 
-export type ActivityStatus = "pending" | "completed" | "rejected" | "failed" | "prohibited";
+export type ActivityStatus = "pending" | "reconciling" | "completed" | "rejected" | "failed" | "prohibited";
 
 export interface ActivityEntry {
   readonly id: string;

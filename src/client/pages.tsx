@@ -150,7 +150,8 @@ function QuickActionCard({ action, domain, sessionId, reload }: {
       }));
       setOutcome(draft.state === "approved"
         ? `${action.successMessage}${draft.receipt === undefined ? "" : ` · 回执 ${draft.receipt}`}${draft.correlationId === undefined ? "" : ` · 关联 ${draft.correlationId}`}`
-        : draft.reviewReason === "execution-failed" ? `自动执行失败，已转入复核${draft.failureCode === undefined ? "。" : `（${draft.failureCode}）。`}` : "已进入待复核队列。");
+        : draft.reviewReason === "reconciling" ? "领域响应中断，已保留同一命令等待核对。"
+          : draft.reviewReason === "execution-failed" ? `自动执行失败${draft.failureCode === undefined ? "。" : `（${draft.failureCode}）。`}` : "此操作需要确认。");
       setError(undefined);
       await reload();
     } catch (caught) {
@@ -287,6 +288,7 @@ export function DraftCard({ draft, sourceTitle, target, siblingCount, reload, co
       <p><strong>{connectedTarget ? `将提交到 ${targetLabel}` : `${targetLabel} 暂不可提交`}</strong><span>{connectedTarget ? draft.origin === "domain" ? `已关联 ${targetLabel} 现有 Proposal；确认时提交同一对象，不会重复创建。` : draft.match === "existing" ? "已找到相同 Proposal，不会重复创建或写入。" : draft.risk === "high" ? "这是高影响操作；确认后由 Nexus 生成短时签名回执再执行。" : `确认后按 ${targetLabel} 声明的审核协议执行，并返回领域凭证。` : "领域连接、采集入口或确认状态当前不可用。"}</span></p>
     </div>
     {draft.reviewReason === "execution-failed" && <p className="sn-draft-group">自动执行未完成：{draft.executionError ?? "请检查领域连接后重试。"}</p>}
+    {draft.reviewReason === "reconciling" && <p className="sn-draft-group">领域可能已经完成操作。Nexus 会沿用同一命令核对，重试不会创建第二条。</p>}
     {draft.reviewReason === "high-risk" && <p className="sn-draft-group">这是高影响操作，仍需你明确复核后执行。</p>}
     {draft.reviewReason === "policy" && <p className="sn-draft-group">当前部署启用了 review-first 恢复策略，需要人工复核。</p>}
     {draft.reviewReason === "prohibited" && <p className="sn-draft-group">这是受保护操作，Nexus 不提供执行入口。</p>}
@@ -294,7 +296,7 @@ export function DraftCard({ draft, sourceTitle, target, siblingCount, reload, co
     <section className="sn-draft-fields"><h4>将提交的字段</h4><dl>{visibleFields.map(([key, value]) => <div key={key} data-field={key}><dt>{fieldLabel(key)}</dt><dd>{displayFieldValue(value)}</dd></div>)}</dl></section>
     {!compact && <details className="sn-draft-source"><summary>查看完整原文 <span>{draft.text.length} 字 · 可拖动右下角放大</span></summary><pre>{draft.text}</pre></details>}
     {error !== undefined && <p className="sn-error">{error}</p>}
-    <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>退回</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未声明采集入口"} onClick={() => { void decide("approve"); }}>{connectedTarget ? draft.reviewReason === "execution-failed" ? `重试提交 ${targetLabel}` : draft.risk === "high" ? `明确确认并执行 ${targetLabel}` : `确认并提交 ${targetLabel}` : "暂不可提交"}</button></footer>
+    <footer><button type="button" disabled={busy} onClick={() => { void decide("reject"); }}>取消</button><button className="sn-primary" type="button" disabled={busy || !connectedTarget} title={connectedTarget ? undefined : "目标领域尚未连接或未声明采集入口"} onClick={() => { void decide("approve"); }}>{connectedTarget ? draft.reviewReason === "reconciling" ? `核对并重试 ${targetLabel}` : draft.reviewReason === "execution-failed" ? `重试提交 ${targetLabel}` : draft.risk === "high" ? `明确确认并执行 ${targetLabel}` : `执行 ${targetLabel}` : "暂不可提交"}</button></footer>
   </article>;
 }
 
@@ -452,6 +454,7 @@ function DomainPage({ data, showConversation, ask, addContext, domainId }: Nexus
 
 const activityLabels: Readonly<Record<ActivityEntry["status"], string>> = {
   pending: "等待复核",
+  reconciling: "等待核对",
   completed: "已完成",
   rejected: "已退回",
   failed: "执行失败",

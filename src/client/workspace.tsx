@@ -387,18 +387,20 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
     void (async () => {
       const items = await requestNative<readonly NativeOfflineAction[]>(nativeBridge, "operations", "offline.list");
       if (!Array.isArray(items) || items.length === 0) return;
+      const knownSessions = sessions.list.getSnapshot().byId;
       for (const item of items) {
-        if (cancelled || typeof item.id !== "string") return;
+        if (cancelled) return;
+        if (typeof item.id !== "string" || typeof item.sessionId !== "string" || knownSessions[item.sessionId as SessionId] === undefined) continue;
         try {
           const result = await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("quick-actions/execute"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) }));
-          if (result.state !== "approved" || typeof result.receipt !== "string" || !result.receipt.startsWith("shadow://")) return;
+          if (result.state !== "approved" || typeof result.receipt !== "string" || !result.receipt.startsWith("shadow://")) continue;
           await requestNative(nativeBridge, "operations", "offline.complete", { actionId: item.id, result: { state: result.state, receipt: result.receipt } });
-        } catch { return; }
+        } catch { continue; }
       }
       if (!cancelled) await reload();
     })().catch(() => undefined);
     return () => { cancelled = true; };
-  }, [nativeBridge, data.generatedAt, reload]);
+  }, [nativeBridge, data.generatedAt, reload, sessions]);
 
   return <div className="sn-app">
     <aside className="sn-sidebar">

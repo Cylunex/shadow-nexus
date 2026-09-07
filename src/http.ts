@@ -365,9 +365,11 @@ async function executeTrustedDraft(draft: CaptureDraft, domains: DomainGateway):
     const { reviewReason: _reviewReason, executionError: _executionError, ...reviewed } = reviewDraft(draft, "approve", new Date(), receipt);
     return { ...reviewed, decisionMode: "automatic" };
   } catch (error) {
+    const reconciling = error instanceof DomainGatewayError
+      && (error.code === "domain-unavailable" || error.status === 503);
     return {
       ...draft,
-      reviewReason: "execution-failed",
+      reviewReason: reconciling ? "reconciling" : "execution-failed",
       executionError: error instanceof Error ? error.message : "自动执行失败，请重试或查看详情。",
       failureCode: executionFailureCode(error),
       updatedAt: new Date().toISOString()

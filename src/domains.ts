@@ -972,6 +972,7 @@ export class HttpDomainGateway implements DomainGateway {
     if (domain === undefined) throw new DomainGatewayError(422, "Proposal 指向了未安装的领域。");
     const capture = domain.surfaces.find((surface) => surface.type === "capture"
       && (surface.intent_prefixes ?? []).some((prefix) => draft.intent === prefix || draft.intent.startsWith(`${prefix}.`)));
+    if (capture?.operation === undefined) return { risk: draft.risk, mode: "prohibited" };
     const direct = capture?.operation?.execution !== undefined;
     const declared = direct ? maxRuntimeRisk([capture?.risk_level, capture?.operation?.risk_level]) : maxRuntimeRisk([
       capture?.risk_level, capture?.operation?.risk_level, domain.surfaces.find((surface) => surface.type === "review")?.risk_level,

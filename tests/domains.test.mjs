@@ -266,6 +266,8 @@ test("uses runtime risk as the floor and trusts L0-L2 by default", () => {
   assert.deepEqual({ risk: raised.risk, mode: raised.mode }, { risk: "high", mode: "review" });
   const reviewFirst = new HttpDomainGateway(1_000, value, "review-first").policyFor(draft("beta"));
   assert.deepEqual({ risk: reviewFirst.risk, mode: reviewFirst.mode }, { risk: "low", mode: "review" });
+  const unknownIntent = trusted.policyFor({ ...draft("beta"), intent: "beta.delete" });
+  assert.deepEqual({ risk: unknownIntent.risk, mode: unknownIntent.mode }, { risk: "low", mode: "prohibited" });
 
   value.domains[0].review.operations.commit.risk_level = "L4";
   const prohibited = trusted.policyFor(draft("alpha"));

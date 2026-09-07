@@ -229,6 +229,7 @@ export function createNexusBrief(
 function activityStatus(draft: CaptureDraft): ActivityEntry["status"] {
   if (draft.state === "approved") return "completed";
   if (draft.state === "rejected") return "rejected";
+  if (draft.reviewReason === "reconciling") return "reconciling";
   if (draft.reviewReason === "execution-failed") return "failed";
   if (draft.reviewReason === "prohibited") return "prohibited";
   return "pending";
@@ -237,6 +238,7 @@ function activityStatus(draft: CaptureDraft): ActivityEntry["status"] {
 function activityDetail(draft: CaptureDraft, status: ActivityEntry["status"]): string {
   if (status === "completed") return draft.decisionMode === "automatic" ? "Agent 自动完成，领域回执已保留" : "由你确认后完成";
   if (status === "rejected") return "由你退回，未写入领域事实";
+  if (status === "reconciling") return "领域响应中断；已保留同一命令，可安全核对并重试";
   if (status === "failed") return draft.executionError ?? "自动执行失败，已转入复核";
   if (status === "prohibited") return "策略禁止执行，未写入领域事实";
   return draft.reviewReason === "high-risk" ? "高影响操作等待明确复核" : "策略例外等待复核";
@@ -253,7 +255,7 @@ export function createActivityLedger(drafts: readonly CaptureDraft[]): readonly 
       actor: draft.decisionMode === "automatic" || draft.state === "pending" ? "agent" : "user",
       status,
       risk: draft.risk,
-      reviewRequired: status === "pending" || status === "failed",
+      reviewRequired: status === "pending" || status === "reconciling" || status === "failed",
       receiptAvailable: draft.state === "approved" && typeof draft.receipt === "string" && draft.receipt !== "",
       detail: activityDetail(draft, status),
       ...(draft.state !== "approved" || draft.receipt === undefined ? {} : { receipt: draft.receipt }),
@@ -276,7 +278,7 @@ export function createTrustOverview(drafts: readonly CaptureDraft[]): TrustOverv
     if (status === "completed" && draft.decisionMode === "automatic") stats.automatic += 1;
     if (status === "completed" && draft.decisionMode !== "automatic") stats.manual += 1;
     if (status === "rejected") stats.rejected += 1;
-    if (status === "pending") stats.pending += 1;
+    if (status === "pending" || status === "reconciling") stats.pending += 1;
     if (status === "failed") stats.failed += 1;
     if (status === "prohibited") stats.prohibited += 1;
     domains.set(draft.domain, stats);
@@ -286,7 +288,7 @@ export function createTrustOverview(drafts: readonly CaptureDraft[]): TrustOverv
     automatic: drafts.filter((draft) => draft.state === "approved" && draft.decisionMode === "automatic").length,
     manual: drafts.filter((draft) => draft.state === "approved" && draft.decisionMode !== "automatic").length,
     rejected: activity.filter((entry) => entry.status === "rejected").length,
-    pending: activity.filter((entry) => entry.status === "pending").length,
+    pending: activity.filter((entry) => entry.status === "pending" || entry.status === "reconciling").length,
     failed: activity.filter((entry) => entry.status === "failed").length,
     prohibited: activity.filter((entry) => entry.status === "prohibited").length,
     domains: [...domains.entries()].map(([domain, stats]) => ({ domain, ...stats })).toSorted((left, right) => left.domain.localeCompare(right.domain))

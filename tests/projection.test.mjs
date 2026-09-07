@@ -14,6 +14,7 @@ import {
   createDraft,
   createDrafts,
   createNexusState,
+  DomainGatewayError,
   handleNexusRequest,
   nexusBasePathFromPluginUrl,
   reclassifyStoredDraft,
@@ -111,12 +112,14 @@ test("normalizes automatic, failed, and prohibited drafts into activity and trus
   const base = proposal();
   const bootstrap = createBootstrap("session-a", [
     { ...base, id: "automatic", state: "approved", decisionMode: "automatic", receipt: "shadow://alpha/records/1" },
+    { ...base, id: "reconciling", reviewReason: "reconciling", executionError: "domain unavailable" },
     { ...base, id: "failed", reviewReason: "execution-failed", executionError: "temporarily unavailable" },
     { ...base, id: "blocked", reviewReason: "prohibited", confirmable: false }
   ], new Date("2026-08-26T08:00:00Z"));
-  assert.deepEqual(bootstrap.activity.map((item) => item.status), ["completed", "failed", "prohibited"]);
+  assert.deepEqual(bootstrap.activity.map((item) => item.status), ["completed", "reconciling", "failed", "prohibited"]);
   assert.equal(bootstrap.activity[0].receiptAvailable, true);
   assert.equal(bootstrap.trust.automatic, 1);
+  assert.equal(bootstrap.trust.pending, 1);
   assert.equal(bootstrap.trust.failed, 1);
   assert.equal(bootstrap.trust.prohibited, 1);
 });
@@ -211,6 +214,7 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
       text: "快捷记录", summary: "快捷记录", fields: { value: fields.value }, risk: "medium"
     }),
     createDraft: async (draft) => {
+      if (draft.summary === "响应中断") throw new DomainGatewayError(503, "领域暂时不可用。", "domain-unavailable");
       if (draft.summary === "自动失败") throw new Error("领域暂时不可用。");
       commits += 1;
       return "shadow://alpha/records/automatic";
@@ -256,6 +260,29 @@ test("automatically executes trusted proposals and keeps a review receipt", asyn
   assert.equal(result.correlationId, result.captureGroupId);
   assert.equal(result.idempotencyKey, result.id);
   assert.equal(state.drafts.get(result.id)?.receipt, result.receipt);
+
+  const interruptedResponse = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/capture`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      sessionId: "session-a",
+      text: "保存响应中断的记录",
+      analysis: {
+        protocol: "shadow.nexus.plan.v1",
+        version: 3,
+        interactionId: "interaction_reconcile-12345678",
+        route: "propose",
+        response: "等待核对。",
+        drafts: [{ domain: "alpha", intent: "alpha.record", summary: "响应中断", risk: "low", fields: { value: "4" } }],
+        contract: { protocol: "shadow.nexus.plan-contract.v1", source: "json-frame", provider: "test" }
+      }
+    })
+  });
+  assert.equal(interruptedResponse.status, 201);
+  const [interrupted] = await interruptedResponse.json();
+  assert.equal(interrupted.state, "pending");
+  assert.equal(interrupted.reviewReason, "reconciling");
+  assert.equal(interrupted.failureCode, "domain-unavailable");
 
   const quickResponse = await fetch(`http://127.0.0.1:${address.port}/shadow-nexus/quick-actions/execute`, {
     method: "POST",
