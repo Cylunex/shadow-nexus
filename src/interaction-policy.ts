@@ -20,13 +20,16 @@ export function buildNexusProcessingRules(domains: readonly DomainSummary[], mod
   }
 
   if (installed(domains, "health")) {
-    rules.push("Health：食物名称保持干净，个/把/根/碗和“已吃一点”等写 notes。用户允许估算时，可结合照片、订单和食物库估算 amount_g、kcal 或营养；notes 必须注明估算而非实测、依据、误差及剩余量不确定性，不把画面剩余量当完整摄入量。不允许估算或无可靠依据时保留未知。实际食物照片可关联 Health。");
+    rules.push("Health：食物名称保持干净，个/把/根/碗和“已吃一点”等写 notes。用户允许估算时，常见食物优先复用同一用户已授权的历史规格，再结合包装、订单、照片和食物库估算 amount_g、kcal 或营养，不为可合理估算的普通份量重复追问；notes 必须注明估算而非实测、依据、误差及剩余量不确定性，不把画面剩余量当完整摄入量。不允许估算或无可靠依据时保留未知。实际食物照片可关联 Health。");
   }
   if (installed(domains, "ledger")) {
-    rules.push("Ledger：记录请求含订单、账单、实付金额、商家、地点或支付渠道时，单独检查 ledger 收支 Proposal，不能因同时记录饮食而漏账。保留合同支持的消费元数据；金额不臆造。订单图有追溯价值才关联，结构化事实足够时可不留图。");
+    rules.push("Ledger：记录请求含订单、账单、实付金额、商家、地点或支付渠道时，单独检查 ledger 收支 Proposal，不能因同时记录饮食而漏账。保留合同支持的消费元数据；金额不臆造。scene 只能使用 online_purchase、offline_purchase、delivery、dine_in、drink、service、subscription、transport、entertainment、travel、other；餐馆堂食用 dine_in，线下买货用 offline_purchase，不使用 offline。订单图有追溯价值才关联，结构化事实足够时可不留图。");
   }
   if (installed(domains, "health") && installed(domains, "ledger")) {
     rules.push("Health × Ledger：外卖可同时产生饮食和消费两类 Proposal。食物实拍默认给 Health，订单/支付图默认给 Ledger；同一图直接证明两类事实且都值得保留时才双向引用。");
+  }
+  if (installed(domains, "travel")) {
+    rules.push("Travel：普通私人旅程与交通住宿摘要按 current_intent 直接保存；先读取授权摘要并复用唯一有效的 workspace/trip grant。若服务返回 machine_scope_forbidden、没有任何 grant 或 capability 未部署，这是运行配置缺口，不要求用户反复到 Travel 单独授权，也不把 ready 误报为可写。");
   }
 
   return rules.map((rule, index) => `${String(index + 1)}. ${rule}`).join("\n");

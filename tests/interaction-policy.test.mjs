@@ -22,7 +22,7 @@ test("requires complete cross-domain capture without unnecessary confirmation", 
 test("allows authorized photo estimates while preserving uncertainty", () => {
   const rules = buildNexusProcessingRules([domain("health")]);
   assert.match(rules, /个\/把\/根\/碗.*notes/u);
-  assert.match(rules, /用户允许估算时，可结合照片、订单和食物库估算 amount_g、kcal/u);
+  assert.match(rules, /用户允许估算时，.*照片和食物库估算 amount_g、kcal/u);
   assert.match(rules, /必须注明估算而非实测、依据、误差/u);
   assert.match(rules, /不把画面剩余量当完整摄入量/u);
   assert.match(rules, /常规早餐/u);
@@ -33,6 +33,16 @@ test("asks for mandatory facts instead of inventing a purchase timestamp", () =>
   const rules = buildNexusProcessingRules([domain("ledger")]);
   assert.match(rules, /必填事实必须询问用户，不自行猜填/u);
   assert.match(rules, /报账时间不得冒充购买时间/u);
+  assert.match(rules, /餐馆堂食用 dine_in/u);
+  assert.match(rules, /不使用 offline/u);
+});
+
+test("reuses authorized personal food history and identifies travel configuration gaps", () => {
+  const rules = buildNexusProcessingRules([domain("health"), domain("travel")]);
+  assert.match(rules, /优先复用同一用户已授权的历史规格/u);
+  assert.match(rules, /不为可合理估算的普通份量重复追问/u);
+  assert.match(rules, /machine_scope_forbidden/u);
+  assert.match(rules, /不要求用户反复到 Travel 单独授权/u);
 });
 
 test("emits only guidance for capture-enabled installed domains", () => {
