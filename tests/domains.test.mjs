@@ -7,7 +7,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { HttpDomainGateway, loadCapabilityStatus, loadNexusRuntime } from "../lib/index.js";
 
-function operation(operationId, method, path, capabilityId, riskLevel = "L0", effect = "read", confirmationResource = null) {
+function operation(operationId, method, path, capabilityId, riskLevel = "L0", effect = "read", confirmationResource = null, execution) {
   return {
     operation_id: operationId,
     method,
@@ -16,7 +16,8 @@ function operation(operationId, method, path, capabilityId, riskLevel = "L0", ef
     tool_name: capabilityId,
     effect,
     risk_level: riskLevel,
-    confirmation_resource: confirmationResource
+    confirmation_resource: confirmationResource,
+    ...(execution === undefined ? {} : { execution })
   };
 }
 
@@ -77,7 +78,10 @@ function runtime() {
       connection: { base_url_env: "BETA_URL", credential_env: "BETA_TOKEN", health_path: "/beta/healthz", context_env: {} },
       surfaces: [{
         id: "capture", type: "capture", operation_id: "create_beta_capture",
-        operation: operation("create_beta_capture", "POST", "/beta/captures", "beta.captures.draft", "L1", "draft"),
+        operation: operation("create_beta_capture", "POST", "/beta/captures", "beta.captures.write", "L1", "write", null, {
+          interaction: "direct", effect_scope: "private", reversibility: "correctable", result_kind: "record",
+          authorization_mode: "current_intent", status_operation_id: "get_beta_capture", idempotency_window_seconds: 86400
+        }),
         risk_level: "L1", intent_prefixes: ["beta.import"]
       }],
       review: null,
@@ -124,7 +128,13 @@ async function fixtureServer() {
     if (request.method === "POST" && request.url === "/alpha/reviews/created/commit") return response.end(JSON.stringify({ receipt: "shadow://alpha/records/1" }));
     if (request.method === "POST" && request.url === "/alpha/reviews/existing/commit") return response.end(JSON.stringify({ receipt: "shadow://alpha/records/2" }));
     if (request.method === "POST" && request.url === "/alpha/reviews/existing/reject") return response.end(JSON.stringify({ state: "rejected" }));
-    if (request.method === "POST" && request.url === "/beta/captures") return response.end(JSON.stringify({ resource_uri: "shadow://beta/captures/1" }));
+    if (request.method === "POST" && request.url === "/beta/captures") return response.end(JSON.stringify({
+      protocol: "shadow.execution-result.v1", command_id: body.command_id,
+      capability_ref: "shadow://capabilities/shadow-beta/beta-test/beta.captures.write",
+      operation_id: "create_beta_capture", status: "committed", result_kind: "record",
+      resource_ref: "shadow://beta/captures/1", receipt_ref: `shadow://beta/operations/${body.command_id}`,
+      completed_at: "2026-08-26T08:00:00Z", replayed: false
+    }));
     response.statusCode = 404;
     response.end(JSON.stringify({ detail: "not found" }));
   });
@@ -228,7 +238,8 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
     sourceRefs: ["shadow://nexus/context/1"],
     attachmentRefs: ["shadow://nexus/assets/1", "shadow://nexus/context/1"]
   }), "shadow://alpha/records/1");
-  assert.equal(await gateway.createDraft(draft("beta", { source_kind: "url", source_uri: "https://example.test" })), "shadow://beta/captures/1");
+  const betaReceipt = await gateway.createDraft(draft("beta", { source_kind: "url", source_uri: "https://example.test" }));
+  assert.match(betaReceipt, /^shadow:\/\/beta\/operations\/cmd_/u);
   assert.ok(fixture.calls.every((call) => call.headers.authorization?.startsWith("Bearer ")));
   assert.deepEqual(fixture.calls.find((call) => call.url === "/alpha/reviews" && call.method === "POST")?.body, {
     intent: "alpha.record",
@@ -238,6 +249,10 @@ test("loads a compiled runtime and projects arbitrary domains without source ada
     source_refs: ["shadow://nexus/context/1", "shadow://nexus/assets/1"]
   });
   assert.deepEqual(fixture.calls.find((call) => call.url === "/alpha/reviews/created/commit")?.body, { revision: 1 });
+  const direct = fixture.calls.find((call) => call.url === "/beta/captures");
+  assert.equal(direct?.headers["idempotency-key"], direct?.body.command_id);
+  assert.deepEqual(direct?.body.arguments.fields, { source_kind: "url", source_uri: "https://example.test" });
+  assert.equal(direct?.body.protocol, "shadow.command.v1");
 });
 
 test("uses runtime risk as the floor and trusts L0-L2 by default", () => {

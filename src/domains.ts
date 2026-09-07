@@ -16,6 +16,15 @@ export interface RuntimeOperation {
     readonly template: string;
     readonly arguments: readonly string[];
   } | null;
+  readonly execution?: {
+    readonly interaction: "direct" | "inline_confirm";
+    readonly effect_scope: "private" | "shared" | "external";
+    readonly reversibility: "correctable" | "reversible" | "compensatable" | "irreversible";
+    readonly result_kind: "record" | "draft" | "task" | "external_action";
+    readonly authorization_mode: "current_intent" | "standing_policy" | "inline_confirmation";
+    readonly status_operation_id?: string;
+    readonly idempotency_window_seconds?: number;
+  };
 }
 
 export interface RuntimeSurface {
@@ -321,6 +330,27 @@ function validateQuickActionSurface(surface: RuntimeSurface): void {
   if (placeholders.some((id) => id === undefined || !ids.has(id))) throw new DomainGatewayError(500, "Nexus 快捷动作摘要模板无效。");
 }
 
+function validateExecution(operation: RuntimeOperation | undefined): void {
+  const execution = operation?.execution;
+  if (execution === undefined) return;
+  if (!new Set(["direct", "inline_confirm"]).has(execution.interaction)
+    || !new Set(["private", "shared", "external"]).has(execution.effect_scope)
+    || !new Set(["correctable", "reversible", "compensatable", "irreversible"]).has(execution.reversibility)
+    || !new Set(["record", "draft", "task", "external_action"]).has(execution.result_kind)
+    || !new Set(["current_intent", "standing_policy", "inline_confirmation"]).has(execution.authorization_mode)
+    || (execution.status_operation_id !== undefined && (typeof execution.status_operation_id !== "string" || execution.status_operation_id.trim() === ""))
+    || (execution.idempotency_window_seconds !== undefined && (!Number.isInteger(execution.idempotency_window_seconds) || execution.idempotency_window_seconds < 60))) {
+    throw new DomainGatewayError(500, "Nexus 执行语义投影无效。");
+  }
+  if ((execution.interaction === "inline_confirm") !== (execution.authorization_mode === "inline_confirmation")) {
+    throw new DomainGatewayError(500, "Nexus 执行语义与授权模式不一致。");
+  }
+  if (execution.interaction === "direct"
+    && (execution.effect_scope === "external" || execution.reversibility === "irreversible" || execution.result_kind === "external_action")) {
+    throw new DomainGatewayError(500, "Nexus 直接执行能力包含高影响效果。");
+  }
+}
+
 function validPointer(value: unknown): boolean {
   return typeof value === "string" && (value === "" || value.startsWith("/")) && value.length <= 200;
 }
@@ -383,7 +413,9 @@ export function loadNexusRuntime(path = environmentValue("SHADOW_NEXUS_RUNTIME_F
     for (const surface of domain.surfaces) {
       validateDisplayMetrics(surface);
       validateQuickActionSurface(surface);
+      validateExecution(surface.operation);
     }
+    if (domain.review !== null) for (const operation of Object.values(domain.review.operations) as RuntimeOperation[]) validateExecution(operation);
     validateEntities(domain);
     if (domain.app !== undefined && domain.app !== null) {
       if (typeof domain.app !== "object" || !Array.isArray(domain.app.aliases)) throw new DomainGatewayError(500, "Nexus 应用入口无效。");
@@ -761,6 +793,50 @@ function nativeCaptureBody(draft: CaptureDraft): Record<string, unknown> {
   ));
 }
 
+function captureOperation(domain: RuntimeDomain, draft: CaptureDraft): RuntimeOperation | undefined {
+  return domain.surfaces.find((surface) => surface.type === "capture"
+    && (surface.intent_prefixes ?? []).some((prefix) => draft.intent === prefix || draft.intent.startsWith(`${prefix}.`)))?.operation;
+}
+
+function commandId(draft: CaptureDraft): string {
+  return `cmd_${createHash("sha256").update(draft.id).digest("base64url").slice(0, 32)}`;
+}
+
+function directCommand(domain: RuntimeDomain, operation: RuntimeOperation, draft: CaptureDraft): Readonly<Record<string, unknown>> {
+  return {
+    protocol: "shadow.command.v1",
+    command_id: commandId(draft),
+    capability_ref: `shadow://capabilities/${domain.plugin_id}/${domain.instance_id}/${operation.capability_id}`,
+    operation_id: operation.operation_id,
+    schema_version: 1,
+    arguments: {
+      intent: draft.intent,
+      summary: draft.summary,
+      fields: draft.fields,
+      source_text: draft.text,
+      source_refs: [...new Set([...(draft.sourceRefs ?? []), ...(draft.attachmentRefs ?? [])])]
+    },
+    target_refs: [],
+    source_refs: [...new Set([...(draft.sourceRefs ?? []), ...(draft.attachmentRefs ?? [])])]
+  };
+}
+
+function directExecutionReceipt(domain: RuntimeDomain, operation: RuntimeOperation, expectedCommandId: string, response: unknown): string {
+  if (typeof response !== "object" || response === null || Array.isArray(response)) throw new DomainGatewayError(502, "领域返回了无效的执行结果。");
+  const value = response as Readonly<Record<string, unknown>>;
+  const capabilityRef = `shadow://capabilities/${domain.plugin_id}/${domain.instance_id}/${operation.capability_id}`;
+  if (value.protocol !== "shadow.execution-result.v1" || value.command_id !== expectedCommandId
+    || value.capability_ref !== capabilityRef || value.operation_id !== operation.operation_id
+    || value.status !== "committed" || value.result_kind !== operation.execution?.result_kind
+    || typeof value.resource_ref !== "string" || !value.resource_ref.startsWith("shadow://")
+    || typeof value.receipt_ref !== "string" || !value.receipt_ref.startsWith("shadow://")
+    || typeof value.completed_at !== "string" || !Number.isFinite(Date.parse(value.completed_at))
+    || typeof value.replayed !== "boolean") {
+    throw new DomainGatewayError(502, "领域返回了无效的执行结果。");
+  }
+  return value.receipt_ref;
+}
+
 function reviewDraft(domain: RuntimeDomain, value: ReviewEnvelope): CaptureDraft {
   const fields = Object.fromEntries(Object.entries(value.fields).map(([key, item]) => [key, typeof item === "string" ? item : JSON.stringify(item)]));
   const reviewSurface = domain.surfaces.find((surface) => surface.type === "review");
@@ -896,22 +972,20 @@ export class HttpDomainGateway implements DomainGateway {
     if (domain === undefined) throw new DomainGatewayError(422, "Proposal 指向了未安装的领域。");
     const capture = domain.surfaces.find((surface) => surface.type === "capture"
       && (surface.intent_prefixes ?? []).some((prefix) => draft.intent === prefix || draft.intent.startsWith(`${prefix}.`)));
-    const declared = maxRuntimeRisk([
-      capture?.risk_level,
-      capture?.operation?.risk_level,
-      domain.surfaces.find((surface) => surface.type === "review")?.risk_level,
-      domain.review?.operations.create.risk_level,
-      domain.review?.operations.commit.risk_level
+    const direct = capture?.operation?.execution !== undefined;
+    const declared = direct ? maxRuntimeRisk([capture?.risk_level, capture?.operation?.risk_level]) : maxRuntimeRisk([
+      capture?.risk_level, capture?.operation?.risk_level, domain.surfaces.find((surface) => surface.type === "review")?.risk_level,
+      domain.review?.operations.create.risk_level, domain.review?.operations.commit.risk_level
     ]);
     const effectiveRisk = Math.max(runtimeRiskRank[declared], modelRiskRank[draft.risk]);
     const risk: RiskLevel = effectiveRisk >= 3 ? "high" : effectiveRisk >= 2 ? "medium" : "low";
-    const operation = domain.review?.operations.commit ?? capture?.operation;
+    const operation = direct ? capture?.operation : domain.review?.operations.commit ?? capture?.operation;
     const metadata = operation === undefined ? {} : {
       capabilityRef: `shadow://capabilities/${domain.plugin_id}/${domain.instance_id}/${operation.capability_id}`,
       operationId: operation.operation_id
     };
     if (declared === "L4") return { risk, mode: "prohibited", ...metadata };
-    if (this.executionPolicy === "review-first" || effectiveRisk >= 3) return { risk, mode: "review", ...metadata };
+    if (operation?.execution?.interaction === "inline_confirm" || this.executionPolicy === "review-first" || effectiveRisk >= 3) return { risk, mode: "review", ...metadata };
     return { risk, mode: "automatic", ...metadata };
   }
 
@@ -1089,6 +1163,15 @@ export class HttpDomainGateway implements DomainGateway {
     if (this.policyFor(draft).mode === "prohibited") throw new DomainGatewayError(422, "受保护的 L4 操作不能由 Nexus 执行。");
     const connection = domainConnection(domain);
     if (connection === undefined) throw new DomainGatewayError(503, `${domain.presentation.title} 尚未连接。`);
+    const operation = captureOperation(domain, draft);
+    if (operation?.execution?.interaction === "direct") {
+      const command = directCommand(domain, operation, draft);
+      const result = await requestJson<unknown>(connection, operation, this.timeoutMs, {
+        body: command,
+        idempotencyKey: String(command.command_id)
+      });
+      return directExecutionReceipt(domain, operation, String(command.command_id), result);
+    }
     if (domain.review !== null) {
       let reviewId = draft.origin === "domain" ? draft.domainReviewId : undefined;
       let reviewRevision = draft.domainRevision;

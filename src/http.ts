@@ -368,7 +368,7 @@ async function executeTrustedDraft(draft: CaptureDraft, domains: DomainGateway):
     return {
       ...draft,
       reviewReason: "execution-failed",
-      executionError: error instanceof Error ? error.message : "自动执行失败，请在复核页重试。",
+      executionError: error instanceof Error ? error.message : "自动执行失败，请重试或查看详情。",
       failureCode: executionFailureCode(error),
       updatedAt: new Date().toISOString()
     };
@@ -560,6 +560,8 @@ export async function handleNexusRequest(
       const created: CaptureDraft[] = [];
       for (const draft of proposed) {
         const current = withExecutionPolicy(upsertProposal(state.drafts, withExecutionPolicy(draft, domains)).draft, domains);
+        state.drafts.set(current.id, current);
+        await state.persist();
         const executed = await executeTrustedDraft(current, domains);
         state.drafts.set(executed.id, executed);
         created.push(executed);
@@ -582,6 +584,8 @@ export async function handleNexusRequest(
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId })
       });
       const current = withExecutionPolicy(upsertProposal(state.drafts, withExecutionPolicy(proposed, domains)).draft, domains);
+      state.drafts.set(current.id, current);
+      await state.persist();
       const executed = await executeTrustedDraft(current, domains);
       state.drafts.set(executed.id, executed);
       await state.persist();
