@@ -1,5 +1,7 @@
 # Domain integration
 
+> 2026-09-07 设计衔接：统一鉴权、Agent 与 Nexus 目标规范以 [本项目接入设计](nexus-integration-design.md) 为准。不再新增领域自管 OIDC/Session、Agent registry/Grant/审批中心或模型/工具通用循环；普通明确写入采用中央 current_intent。以下相关条目仅描述旧实现/历史阶段，不能作为新增实现继续复制；未迁移接口仍保留当前安全限制。
+
 Nexus 是通用工作台，不拥有领域注册表，也不理解领域字段。接入一个新领域时，只修改领域仓库
 的 Plugin Definition 和仓库外 Deployment；不修改 `src/domains.ts`、页面导航或关键词路由。
 

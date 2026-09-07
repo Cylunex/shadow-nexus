@@ -69,3 +69,5 @@ proxy strip client identity headers before setting the trusted user header.
 `SHADOW_NEXUS_EXECUTION_POLICY` defaults to `trusted`: L0-L2 execute automatically and remain visible in
 the review history. Set it to `review-first` for a recovery deployment that queues every writable proposal.
 Runtime-declared risk is authoritative and the model may raise, but never lower, the effective risk.
+
+- [统一鉴权、Agent 与 Nexus 接入设计（目标方案，尚未实现）](docs/nexus-integration-design.md)
