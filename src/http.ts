@@ -571,18 +571,22 @@ export async function handleNexusRequest(
       return;
     }
     if (request.method === "POST" && url.pathname === "/shadow-nexus/quick-actions/execute") {
-      const input = await readJson(request) as Partial<NexusQuickActionRequest>;
+      const input = await readJson(request) as Partial<NexusQuickActionRequest> & { readonly commandId?: unknown };
       if (typeof input.domain !== "string" || typeof input.actionId !== "string"
         || typeof input.fields !== "object" || input.fields === null || Array.isArray(input.fields)
-        || (input.sessionId !== undefined && typeof input.sessionId !== "string")) {
+        || (input.sessionId !== undefined && typeof input.sessionId !== "string")
+        || (input.commandId !== undefined && (typeof input.commandId !== "string" || !/^cmd_[A-Za-z0-9_-]{8,128}$/u.test(input.commandId)))) {
         throw new RequestError(400, "快捷动作请求无效。");
       }
-      const proposed = domains.quickActionDraft({
+      const generated = domains.quickActionDraft({
         domain: input.domain,
         actionId: input.actionId,
         fields: input.fields as Readonly<Record<string, string>>,
         ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId })
       });
+      const proposed = input.commandId === undefined ? generated : {
+        ...generated, id: input.commandId, captureGroupId: input.commandId
+      };
       const current = withExecutionPolicy(upsertProposal(state.drafts, withExecutionPolicy(proposed, domains)).draft, domains);
       state.drafts.set(current.id, current);
       await state.persist();

@@ -61,6 +61,10 @@ interface PendingAppCapture {
 
 interface NativeOfflineAction {
   readonly id: string;
+  readonly commandId?: string;
+  readonly enqueuedAt?: string;
+  readonly effectiveAt?: string;
+  readonly timeZone?: string;
   readonly sessionId?: string;
   readonly domain: string;
   readonly actionId: string;
@@ -386,8 +390,9 @@ export function NexusWorkspace({ sessionId, sessionTitle, sessionOptions, sessio
       for (const item of items) {
         if (cancelled || typeof item.id !== "string") return;
         try {
-          await nexusJson(await fetch(nexusEndpoint("quick-actions/execute"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) }));
-          await requestNative(nativeBridge, "operations", "offline.complete", { actionId: item.id });
+          const result = await nexusJson<CaptureDraft>(await fetch(nexusEndpoint("quick-actions/execute"), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(item) }));
+          if (result.state !== "approved" || typeof result.receipt !== "string" || !result.receipt.startsWith("shadow://")) return;
+          await requestNative(nativeBridge, "operations", "offline.complete", { actionId: item.id, result: { state: result.state, receipt: result.receipt } });
         } catch { return; }
       }
       if (!cancelled) await reload();
